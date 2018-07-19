@@ -42,7 +42,7 @@ gcc-deps:
 
 .PHONY: host-gcc-deps
 host-gcc-deps:
-	@mkdir -p $@
+	mkdir -p $@
 	(cd $@ && \
 	  $(MAKE) -f $(SRCDIR)/Makefile.gcc-deps \
 	    SRCDIR=$(SRCDIR) \

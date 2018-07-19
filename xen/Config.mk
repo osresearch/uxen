@@ -52,6 +52,9 @@ TARGET_osx_only := not-
 else ifeq ($(TARGET_HOST),osx)
 TARGET_windows_only := not-
 TARGET_osx_only :=
+else ifeq ($(TARGET_HOST),linux)
+TARGET_windows_only := not-
+TARGET_osx_only := not-
 else
 $(error invalid TARGET_HOST)
 endif

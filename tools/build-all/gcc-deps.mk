@@ -2,6 +2,7 @@
 # inputs:
 # - INSTALL_DIR
 # - MK_ENV (set to the literals BUILD_TOOLS_ENV or HOST_BUILD_TOOLS_ENV)
+#  https://ftp.gnu.org/gnu/gmp/gmp-6.1.0.tar.bz2
 #
 
 gmp_DISTFILES = gmp-6.1.0.tar.bz2

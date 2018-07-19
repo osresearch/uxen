@@ -19,3 +19,4 @@ Copy to `tools/host-all/files`:
 Copy to `tools/cross-vm/files` (yes binutils is repeated):
 * https://ftp.gnu.org/gnu/binutils/binutils-2.25.1.tar.bz2
 * https://ftp.gnu.org/gnu/gcc/gcc-4.9.3/gcc-4.9.3.tar.bz2
+* https://acpica.org/sites/acpica/files/acpica-unix2-20120711.tar.gz

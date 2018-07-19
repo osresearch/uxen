@@ -13,7 +13,7 @@ TARGETS = all dist clean
 .PHONY: $(TARGETS)
 $(TARGETS): %: subdirs-%
 
-dist: uxen-interface.txt
+dist: # uxen-interface.txt
 	$(_W)echo Installing from $(abspath $(<D)) to $(DISTDIR)
 	$(_W)echo Installing -- $(<F)
 	$(_V)$(call install_data,$<,$(DISTDIR))
