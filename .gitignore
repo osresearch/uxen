@@ -2,3 +2,5 @@
 *.gz
 build
 dist
+tools/install/
+tools/install-build/
