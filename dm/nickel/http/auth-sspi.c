@@ -1,5 +1,6 @@
 #include <dm/config.h>
 #include <dm/base64.h>
+#include <dm/dm.h>
 #include <log.h>
 #include <buff.h>
 #include "ntlm.h"
@@ -226,7 +227,7 @@ static bool is_ntlm_token(struct http_auth *auth, const char *token, size_t len)
         goto out;
     }
 
-    if (NLOG_LEVEL > 3)
+    if (NLOG_LEVEL > 3 && !hide_log_sensitive_data)
         netlog_print_esc("TOKEN", token, len);
 
 out:

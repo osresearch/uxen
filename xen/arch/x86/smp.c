@@ -377,6 +377,10 @@ void on_selected_cpus(
     if (wait == 1) {
 	if (cpumask_equal(&call_data.selected, cpumask_of(smp_processor_id())))
 	    goto this_cpu;
+        /* KeIpiGenericCall canary */
+#ifdef __x86_64__
+        WARNISH();
+#endif
         UI_HOST_CALL(ui_on_selected_cpus, &call_data.selected,
                      __uxen_smp_call_function_interrupt);
 	goto wait;
@@ -469,6 +473,11 @@ static void __smp_call_function_interrupt(void)
 
     if ( !cpumask_test_cpu(cpu, &call_data.selected) )
         return;
+
+    if (!func) {
+        cpumask_clear_cpu(cpu, &call_data.selected);
+        return;
+    }
 
     irq_enter();
 

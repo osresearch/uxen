@@ -7,6 +7,14 @@ struct smbios_struct_header {
     uint16_t    handle;
 };
 
+struct smbios_header {
+    uint8_t     calling_method;
+    uint8_t     major_version;
+    uint8_t     minor_version;
+    uint8_t     dmi_revision;
+    uint32_t    length;
+};
+
 void *
 __smbios_get_struct(char *start, char *end,
                     int type_start, int type_end,

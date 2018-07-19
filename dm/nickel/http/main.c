@@ -1025,10 +1025,12 @@ static int create_http_header(bool prx_auth, const char *sv_name, int use_head, 
     const char *method = NULL;
     const char *s_url = NULL;
 
-    NETLOG5("create_http_header: sv_name %s, horig->method %s, horig->url %s",
-            sv_name ? sv_name : "(null)",
-            horig && horig->method ? horig->method : "(null)",
-            horig && horig->url ? BUFF_CSTR(horig->url) : "(null)");
+    if (!hide_log_sensitive_data) {
+        NETLOG5("create_http_header: sv_name %s, horig->method %s, horig->url %s",
+                sv_name ? sv_name : "(null)",
+                horig && horig->method ? horig->method : "(null)",
+                horig && horig->url ? BUFF_CSTR(horig->url) : "(null)");
+    }
     if (!horig) {
         NETLOG("%s: ERROR - bug, no horig", __FUNCTION__);
         goto out;
@@ -1490,8 +1492,10 @@ static int hp_dns_proxy_check_domain(struct http_ctx *hp)
 
     if (inet_aton(hp->h.sv_name, &addr.ipv4) != 0) {
         addr.family = AF_INET;
-        if (!ac_is_ip_allowed(hp->ni, &addr)) {
-            HLOG("IP %s DENIED by containment", hp->h.sv_name);
+        assert(hp->h.daddr.sin_port);
+        if (!ac_is_ip_port_allowed(hp->ni, &addr, hp->h.daddr.sin_port)) {
+            HLOG("%s:%u DENIED by containment", hp->h.sv_name,
+                 (unsigned) ntohs(hp->h.daddr.sin_port));
             goto out;
         }
 
@@ -1500,8 +1504,10 @@ static int hp_dns_proxy_check_domain(struct http_ctx *hp)
 
     if (inet_pton(AF_INET6, hp->h.sv_name, (void *) &addr.ipv6) == 1) {
         addr.family = AF_INET6;
-        if (!ac_is_ip_allowed(hp->ni, &addr)) {
-            HLOG("IPv6 %s DENIED by containment", hp->h.sv_name);
+        assert(hp->h.daddr.sin_port);
+        if (!ac_is_ip_port_allowed(hp->ni, &addr, hp->h.daddr.sin_port)) {
+            HLOG("IPv6,port %s,%u DENIED by containment", hp->h.sv_name,
+                 (unsigned) ntohs(hp->h.daddr.sin_port));
             goto out;
         }
 
@@ -1522,6 +1528,7 @@ static int hp_dns_proxy_check_domain(struct http_ctx *hp)
 
     dns->hp = hp;
     dns->domain = strdup(hp->h.sv_name);
+    dns->port = hp->h.daddr.sin_port;
     dns->containment_check = 1;
     dns->proxy_on = 1;
     if (!dns->domain)
@@ -2630,6 +2637,14 @@ static int srv_closing(struct http_ctx *hp, int err)
     assert(hp->so);
     HLOG3(" err %d", err);
 
+    if (err && hp->cx) {
+        struct lava_event *lv;
+
+        lv = tcpip_lava_get(hp->cx->ni_opaque);
+        if (lv)
+            lava_event_tcp_socket_error(lv, err);
+    }
+
     if (hp->cstate == S_CONNECTED && hp->cx && !(hp->cx->flags & CXF_GUEST_PROXY)) {
         if (hp->cx->out && BUFF_BUFFERED(hp->cx->out)) {
             hp->cx->flags |= CXF_FLUSH_CLOSE;
@@ -3108,6 +3123,7 @@ static int hp_srv_process(struct http_ctx *hp)
 
         bool headers_just_received = false;
         bool parse_error = false;
+        struct lava_event *lv;
 
         lparsed = HTTP_PARSE_BUFF(hp->cx->srv_parser, hp->cx->out);
         needs_consume = true;
@@ -3131,6 +3147,10 @@ static int hp_srv_process(struct http_ctx *hp)
                 free(hp->cx->alternative_proxies);
                 hp->cx->alternative_proxies = NULL;
             }
+            lv = tcpip_lava_get(hp->cx->ni_opaque);
+            if (lv)
+                lava_event_http_response(lv, hp->cx->srv_parser->h.status_code);
+
             hp->cx->srv_parser->headers_parsed = 1;
             hp->flags &= ~HF_KEEP_ALIVE;
             if (!conn_close && ((hp->cx->srv_parser->h.http_major == 1 &&
@@ -3665,9 +3685,47 @@ static int srv_connect_direct(struct http_ctx *hp)
 
         a = fakedns_get_ips(hp->h.daddr.sin_addr);
         if (a && a[0].family) {
+            size_t len, i, j;
+            char *ret_mask = NULL;
+            struct net_addr *ca = NULL;
+
+            len = 0;
+            while (a[len].family)
+                len++;
+            assert(len);
+            ret_mask = calloc(1, (len + 1) * sizeof (char));
+            ca = calloc(1, (len + 1) * sizeof(struct net_addr));
+            if (!ret_mask || !ca) {
+                warn("memory error\n");
+                ret = -1;
+                goto fake_ip_out;
+            }
+
+            if (ac_check_dns_ips_port(hp->ni, a, hp->h.daddr.sin_port, ret_mask, len) < 0) {
+                HLOG2("fake-ip ac_check_dns_ips_port FAILED, connection DENIED");
+                ret = -1;
+                goto fake_ip_out;
+            }
+
+            j = 0;
+            for (i = 0; i < len; i++) {
+                if (ret_mask[i] == '1')
+                    ca[j++] = a[i];
+            }
+
+            if (j == 0) {
+                HLOG2("fake-ip connection DENIED by containment");
+                ret = -1;
+                goto fake_ip_out;
+            }
+
+
             hp->cstate = S_RESOLVED;
-            ret = srv_connect_dns_resolved(hp, a);
-            goto out;
+            ret = srv_connect_dns_resolved(hp, ca);
+            fake_ip_out:
+                free(ret_mask);
+                free(ca);
+                goto out;
         }
 
         /* We have not yet obtained the real ip ...
@@ -3690,7 +3748,7 @@ static void dns_lookup_sync(void *opaque)
     NETLOG2("%s: dns lookup for %s", __FUNCTION__, dns->domain);
     assert(dns->hp);
     if (dns->containment_check)
-        dns->response = dns_lookup_containment(dns->hp->ni, dns->domain, dns->proxy_on);
+        dns->response = dns_lookup_containment(dns->hp->ni, dns->domain, dns->port, dns->proxy_on);
     else
         dns->response = dns_lookup(dns->domain);
 }
@@ -3904,8 +3962,6 @@ static void on_fakeip_update(struct in_addr fkaddr, struct net_addr *a)
 
 static int hp_connecting_containment(struct http_ctx *hp, const struct net_addr *a, uint16_t port)
 {
-    struct sockaddr_in saddr;
-
     if (hp->proxy || (hp->flags & HF_IP_CHECKED))
         return 0;
 
@@ -3916,10 +3972,7 @@ static int hp_connecting_containment(struct http_ctx *hp, const struct net_addr 
         return 0;
 
     hp->flags |= HF_IP_CHECKED;
-    memset(&saddr, 0, sizeof(saddr));
-    if (hp->cx && hp->cx->ni_opaque)
-        saddr = tcpip_get_gaddr(hp->cx->ni_opaque);
-    return ac_gproxy_allow(hp->ni, saddr, a, port) ? 0 : -1;
+    return ac_is_ip_port_allowed(hp->ni, a, port) ? 0 : -1;
 }
 
 static int srv_connect(struct http_ctx *hp, const struct net_addr *a, uint16_t port)
@@ -3989,6 +4042,10 @@ static int srv_connect_list(struct http_ctx *hp, struct net_addr *a, uint16_t po
             ret = srv_connect(hp, hyb_addr, port);
         }  else {
             lava_event_remote_set(lv, a, port);
+            /* no need to containment check as
+             * multiple IP could have only come from a DNS lookup
+             * or it was a connecting fake-ip and we did the check
+             */
             ret = so_connect_list(hp->so, a, port);
         }
     } else {
@@ -4082,7 +4139,8 @@ static void set_settings(struct nickel *ni, yajl_val config)
             user_agent = strdup(tmp);
             if (!user_agent)
                 goto mem_err;
-            NETLOG2("%s: user-agent '%s'", __FUNCTION__, user_agent);
+            if (!hide_log_sensitive_data)
+                NETLOG2("%s: user-agent '%s'", __FUNCTION__, user_agent);
         }
 
         if (!user_agent && ni_schedule_bh(ni, NULL, get_uset_agent_cb, ni) < 0) {
@@ -4247,8 +4305,10 @@ static void set_settings(struct nickel *ni, yajl_val config)
             if (wdomain && wusername) {
                 memcpy((uint8_t *)wdomain, custom_ntlm->w_domain, custom_ntlm->w_domain_len);
                 memcpy((uint8_t *)wusername, custom_ntlm->w_username, custom_ntlm->w_username_len);
-                NETLOG("%s: custom NTLM creds set for user %ls\\%ls", __FUNCTION__,
-                        wdomain, wusername);
+                if (!hide_log_sensitive_data) {
+                    NETLOG("%s: custom NTLM creds set for user %ls\\%ls", __FUNCTION__,
+                            wdomain, wusername);
+                }
                 free(wusername);
                 free(wdomain);
             }
@@ -4318,7 +4378,8 @@ static void rpc_user_agent_cb(void *opaque, dict d)
         warnx("%s: malloc", __FUNCTION__);
         return;
     }
-    NETLOG2("%s: user-agent '%s'", __FUNCTION__, user_agent);
+    if (!hide_log_sensitive_data)
+        NETLOG2("%s: user-agent '%s'", __FUNCTION__, user_agent);
 }
 
 static void rpc_connect_proxy_cb(void *opaque, dict d)
@@ -5668,7 +5729,7 @@ static int cx_process(struct clt_ctx *cx, const uint8_t *buf, int len_buf)
         assert(len_buf >= ret);
         if (buff_append(cx->in, (const char*) buf + ret , len_buf - ret) < 0)
             goto err;
-        if (NLOG_LEVEL > 5) {
+        if (NLOG_LEVEL > 5 && !hide_log_sensitive_data) {
             CXL6("cx->in :");
             netlog_print_esc("cx->in", BUFF_CSTR(cx->in), cx->in->len);
         }

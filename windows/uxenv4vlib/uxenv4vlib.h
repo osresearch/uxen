@@ -48,6 +48,7 @@ V4V_DLL_DECL void uxen_v4vlib_deliver_signal (void);
 V4V_DLL_DECL void uxen_v4vlib_set_logger(uxen_v4v_logger_t logger);
 V4V_DLL_DECL void uxen_v4vlib_init_driver(PDRIVER_OBJECT pdo);
 V4V_DLL_DECL void uxen_v4vlib_free_driver(void );
+V4V_DLL_DECL void uxen_v4vlib_set_thread_priority(LONG priority);
 
 V4V_DLL_DECL void uxen_v4vlib_init_driver_hook(PDRIVER_OBJECT pdo);
 V4V_DLL_DECL void uxen_v4vlib_free_driver_unhook(void );

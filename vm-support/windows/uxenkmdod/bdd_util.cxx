@@ -52,6 +52,8 @@ MapFrameBuffer(
         return STATUS_INVALID_PARAMETER;
     }
 
+    uxen_msg("map fb\n");
+
     *VirtualAddress = MmMapIoSpace(PhysicalAddress,
                                    Length,
                                    MmWriteCombined);
@@ -69,6 +71,9 @@ MapFrameBuffer(
             return STATUS_NO_MEMORY;
         }
     }
+
+    uxen_msg("map fb done phys %I64x length %x va %p\n",
+        PhysicalAddress.QuadPart, (UINT)Length, *VirtualAddress);
 
     return STATUS_SUCCESS;
 }
@@ -92,6 +97,8 @@ UnmapFrameBuffer(
                         Length, VirtualAddress);
         return STATUS_INVALID_PARAMETER;
     }
+
+    uxen_msg("unmap fb va %p length %x\n", VirtualAddress, (UINT)Length);
 
     MmUnmapIoSpace(VirtualAddress,
                    Length);

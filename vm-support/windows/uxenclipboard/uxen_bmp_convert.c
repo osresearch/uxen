@@ -224,7 +224,7 @@ static int try_convert(char* alt_data, unsigned int alt_size, char** output,
 
 static
 wchar_t* uxen_recognized_graphics_formats[] = {L"PNG", L"JFIF", L"GIF",
-    L"JPG", L"TIFF", NULL};
+                                               L"JPG", L"TIFF", L"BMP", NULL};
 
 int uxenclipboard_is_supported_graphics_format(wchar_t* fmt)
 {

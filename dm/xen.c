@@ -85,7 +85,7 @@ xen_hvm_track_dirty_vram(uint32_t pfn, uint32_t nr, uint8_t *bitmap,
 			 uint16_t want_events)
 {
 
-    if (xen_hvm_track_dirty_vram_enabled == 0) {
+    if ((vm_vram_dirty_tracking == 0) || (xen_hvm_track_dirty_vram_enabled == 0)) {
 	if (bitmap)
 	    memset(bitmap, 0xff, nr / 8);
 	return 0;

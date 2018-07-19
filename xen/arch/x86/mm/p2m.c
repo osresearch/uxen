@@ -42,6 +42,7 @@
 #endif  /* __UXEN__ */
 #include <uxen/memcache-dm.h>
 #include <asm/hvm/ax.h>
+#include <asm/hvm/xen_pv.h>
 
 #include "mm-locks.h"
 
@@ -397,9 +398,10 @@ int p2m_alloc_table(struct p2m_domain *p2m)
     d->arch.hvm_domain.vmx.ept_control.asr  =
         pagetable_get_pfn(p2m_get_pagetable(p2m));
 
-
     if (ax_pv_ept) 
         ax_pv_ept_flush(p2m);
+    if (xen_pv_ept)
+	xen_pv_ept_flush(p2m);
 
 #ifndef __UXEN__
     if ( hap_enabled(d) )
@@ -446,7 +448,12 @@ void p2m_teardown(struct p2m_domain *p2m)
     p2m->phys_table = pagetable_null();
 
     while ( (pg = page_list_remove_head(&p2m->pages)) )
+    {
+        p2m_unlock(p2m);
         d->arch.paging.free_page(d, pg);
+        p2m_lock(p2m);
+    }
+
     p2m_unlock(p2m);
 
     dsps_release(d);

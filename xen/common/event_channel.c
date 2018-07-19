@@ -250,8 +250,10 @@ static long evtchn_bind_virq(evtchn_bind_virq_t *bind)
     if ( virq_is_global(virq) && (vcpu != 0) )
         return -EINVAL;
 
-    if ( (vcpu < 0) || (vcpu >= d->max_vcpus) ||
-         ((v = d->vcpu[vcpu]) == NULL) )
+    if ((vcpu < 0) || (vcpu >= d->max_vcpus))
+        return -ENOENT;
+    vcpu = array_index_nospec(vcpu, d->max_vcpus);
+    if ((v = d->vcpu[vcpu]) == NULL)
         return -ENOENT;
 
     spin_lock(&d->event_lock);
@@ -283,8 +285,10 @@ static long evtchn_bind_ipi(evtchn_bind_ipi_t *bind)
     int            port, vcpu = bind->vcpu;
     long           rc = 0;
 
-    if ( (vcpu < 0) || (vcpu >= d->max_vcpus) ||
-         (d->vcpu[vcpu] == NULL) )
+    if ((vcpu < 0) || (vcpu >= d->max_vcpus))
+        return -ENOENT;
+    vcpu = array_index_nospec(vcpu, d->max_vcpus);
+    if ((d->vcpu[vcpu] == NULL)
         return -ENOENT;
 
     spin_lock(&d->event_lock);
@@ -853,7 +857,10 @@ long evtchn_bind_vcpu(unsigned int port, unsigned int vcpu_id)
     struct evtchn *chn;
     long           rc = 0;
 
-    if ( (vcpu_id >= d->max_vcpus) || (d->vcpu[vcpu_id] == NULL) )
+    if (vcpu_id >= d->max_vcpus)
+        return -ENOENT;
+    vcpu_id = array_index_nospec(vcpu_id, d->max_vcpus);
+    if ((d->vcpu[vcpu_id] == NULL)
         return -ENOENT;
 
     spin_lock(&d->event_lock);

@@ -40,6 +40,7 @@
 #include <iprt/mem.h>
 #include <iprt/path.h>
 #include <iprt/string.h>
+#include "dbghlp.h"
 
 #define SHFL_CPARMS_SET_UTF8 0
 #define SHFL_CPARMS_SET_SYMLINKS 0
@@ -326,6 +327,8 @@ DECLVBGL(int) vboxCallClose (PVBSFCLIENT pClient, PVBSFMAP pMap, SHFLHANDLE Hand
 
     data.handle.type                    = VMMDevHGCMParmType_64bit;
     data.handle.u.value64               = Handle;
+
+    verify_on_stack(&data.callInfo);
 
     rc = VbglHGCMCall (pClient->handle, &data.callInfo, sizeof (data));
 

@@ -398,7 +398,7 @@ struct xen_memory_set_zero_page_desc {
     uint64_t ret;
     union {
         uint64_t zero_thread_addr;
-        uint64_t zero_thread_cr3;
+        uint64_t zero_thread_paging_base;
     };
     uint8_t nr_gpfns_mode;
     uint8_t gva_mode;

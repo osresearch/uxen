@@ -10,7 +10,7 @@
 #include <Dbghelp.h>
 #include <strsafe.h>
 #include <dm-features.h>
-#include "logging.h"
+#include "../common/debug-user.h"
 
 #define DXGKRNL "c:\\Windows\\System32\\drivers\\dxgkrnl.sys"
 #define PVK_PART "c:\\uXenGuest\\uxenpatcher\\pvk.pvk"
@@ -59,25 +59,25 @@ static const char* tools[][3] = {
      "Enable test signing"}
 };
 
-static struct file_map* create_file_map(LPCSTR filepath)
+static struct file_map* create_file_map(LPCSTR filepath, BOOL writable)
 {
     struct file_map* file = NULL;
-    DWORD attr = GENERIC_READ | GENERIC_WRITE;
+    DWORD attr = writable ? GENERIC_READ | GENERIC_WRITE : GENERIC_READ;
     DWORD share = FILE_SHARE_DELETE | FILE_SHARE_READ | FILE_SHARE_WRITE;
-    DWORD protect = PAGE_READWRITE;
-    DWORD access = FILE_MAP_ALL_ACCESS;
+    DWORD protect = writable ? PAGE_READWRITE : PAGE_READONLY;
+    DWORD access = writable ? FILE_MAP_ALL_ACCESS : FILE_MAP_READ;
 
     file = (struct file_map*)malloc(sizeof(*file));
     if (file == NULL)
     {
-        debug_log("malloc failed");
+        uxen_err("malloc failed");
         return NULL;
     }
 
     file->file = CreateFileA(filepath, attr, share, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file->file == INVALID_HANDLE_VALUE)
     {
-        debug_log("CreateFile failed with error %ld", GetLastError());
+        uxen_err("CreateFile failed with error %ld", GetLastError());
         free(file);
         return NULL;
     }
@@ -87,7 +87,7 @@ static struct file_map* create_file_map(LPCSTR filepath)
     {
         CloseHandle(file->file);
         free(file);
-        debug_log("CreateFileMapping failed with error %ld", GetLastError());
+        uxen_err("CreateFileMapping failed with error %ld", GetLastError());
         return NULL;
     }
 
@@ -97,7 +97,7 @@ static struct file_map* create_file_map(LPCSTR filepath)
         CloseHandle(file->mapping);
         CloseHandle(file->file);
         free(file);
-        debug_log("MapViewOfFile failed with error %ld", GetLastError());
+        uxen_err("MapViewOfFile failed with error %ld", GetLastError());
         return NULL;
     }
 
@@ -150,6 +150,37 @@ static int kmp(int *pi, char *target, int tsize, char *pattern, int psize)
     return -1;
 }
 
+static BOOL find_section(PVOID view, char *name, DWORD *sec_start, DWORD *sec_size)
+{
+    PIMAGE_NT_HEADERS headers = NULL;
+    PIMAGE_SECTION_HEADER section = NULL;
+    int n_sections;
+    int i;
+
+    headers = ImageNtHeader(view);
+    if (headers == NULL) {
+        DWORD err = GetLastError();
+        uxen_err("ImageNtHeader failed %ld", err);
+        return FALSE;
+    }
+
+    n_sections = headers->FileHeader.NumberOfSections;
+    section = (PIMAGE_SECTION_HEADER)(headers + 1);
+    for (i = 0; i < n_sections; i++) {
+        if (_strcmpi((char*)section->Name, name) == 0) {
+            uxen_msg("found section %s: 0x%08x size 0x%08x",
+                name, section->VirtualAddress, section->Misc.VirtualSize);
+            *sec_start = section->VirtualAddress;
+            *sec_size = section->Misc.VirtualSize;
+
+            return TRUE;
+        }
+        section++;
+    }
+
+    return FALSE;
+}
+
 // We try to locate ProcessVSyncTdrWorker function which we expect to find in PAGE section
 // and which we expect to use a magic constant within 64 bytes of its end. Should there be
 // more then one function with such properties we expect our function to be the last one.
@@ -172,7 +203,7 @@ static PVOID find_function(PVOID view, PIMAGE_IA64_RUNTIME_FUNCTION_ENTRY rt, UL
     if (headers == NULL)
     {
         DWORD err = GetLastError();
-        debug_log("ImageNtHeader failed %ld", err);
+        uxen_err("ImageNtHeader failed %ld", err);
         goto exit;
     }
 
@@ -195,7 +226,7 @@ static PVOID find_function(PVOID view, PIMAGE_IA64_RUNTIME_FUNCTION_ENTRY rt, UL
             continue;
 
         func = func_next;
-        debug_log("Found matching function with begin/end offset: 0x%lx/0x%lx", begin_offset, end_offset);
+        uxen_msg("Found matching function with begin/end offset: 0x%lx/0x%lx", begin_offset, end_offset);
     }
 
 exit:
@@ -214,13 +245,13 @@ static int run_cmd(const char* app, const char* cmd_line, const char* desc)
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
 
-    debug_log("%s", desc);
+    uxen_msg("%s", desc);
 
     hres = StringCbLengthA(app, STRSAFE_MAX_CCH, &app_len);
     if (FAILED(hres))
     {
         ret = -1;
-        debug_log("StringCbLengthA app_name failed 0x%lx", hres);
+        uxen_err("StringCbLengthA app_name failed 0x%lx", hres);
         goto exit;
     }
 
@@ -228,7 +259,7 @@ static int run_cmd(const char* app, const char* cmd_line, const char* desc)
     if (FAILED(hres))
     {
         ret = -2;
-        debug_log("StringCbLengthA cmd_line failed 0x%lx", hres);
+        uxen_err("StringCbLengthA cmd_line failed 0x%lx", hres);
         goto exit;
     }
 
@@ -236,7 +267,7 @@ static int run_cmd(const char* app, const char* cmd_line, const char* desc)
     if (FAILED(hres))
     {
         ret = -3;
-        debug_log("malloc failed %d", (int)(app_len + cmd_len));
+        uxen_err("malloc failed %d", (int)(app_len + cmd_len));
         goto exit;
     }
 
@@ -244,7 +275,7 @@ static int run_cmd(const char* app, const char* cmd_line, const char* desc)
     if (FAILED(hres))
     {
         ret = -4;
-        debug_log("StringCbPrintf failed 0x%lx", hres);
+        uxen_err("StringCbPrintf failed 0x%lx", hres);
         goto exit;
     }
 
@@ -256,7 +287,7 @@ static int run_cmd(const char* app, const char* cmd_line, const char* desc)
     if (!res)
     {
         ret = -5;
-        debug_log("CreateProcessA failed %ld", GetLastError());
+        uxen_err("CreateProcessA failed %ld", GetLastError());
         goto exit;
     }
 
@@ -266,7 +297,7 @@ static int run_cmd(const char* app, const char* cmd_line, const char* desc)
     if (!res || (exit_code != 0))
     {
         ret = -6;
-        debug_log("GetExitCodeProcess failed %ld", GetLastError());
+        uxen_err("GetExitCodeProcess failed %ld", GetLastError());
         goto exit;
     }
 
@@ -280,7 +311,7 @@ exit:
     return ret;
 }
 
-static int backup_driver(LPCSTR file)
+int backup_driver(LPCSTR file)
 {
     BOOL res = FALSE;
     int ret = 0;
@@ -293,19 +324,19 @@ static int backup_driver(LPCSTR file)
         ret = run_cmd(tool[0], tool[1], tool[2]);
         if (ret < 0)
         {
-            debug_log("%s failed %d", tool[0], ret);
+            uxen_err("%s failed %d", tool[0], ret);
             goto exit;
         }
     }
 
-    debug_log("Making a backup of %s", DXGKRNL);
+    uxen_msg("Making a backup of %s", DXGKRNL);
     res = MoveFileA(DXGKRNL, DXGKRNL ".uxen_bak");
     if (!res)
-        debug_log("MoveFileA failed %ld - continuing", GetLastError());
+        uxen_err("MoveFileA failed %ld - continuing", GetLastError());
 
     res = CopyFileA(DXGKRNL ".uxen_bak", DXGKRNL, TRUE);
     if (!res)
-        debug_log("CopyFileA failed %ld - continuing", GetLastError());
+        uxen_err("CopyFileA failed %ld - continuing", GetLastError());
 
 exit:
     return ret;
@@ -322,43 +353,87 @@ static void log_file_info(LPCSTR file)
     ver_data_size = GetFileVersionInfoSizeA(file, NULL);
     if (ver_data_size == 0)
     {
-        debug_log("GetFileVersionInfoSize failed %ld", GetLastError());
+        uxen_err("GetFileVersionInfoSize failed %ld", GetLastError());
         goto exit;
     }
 
     ver_data = malloc(ver_data_size);
     if (!ver_data)
     {
-        debug_log("malloc failed %ld", ver_data_size);
+        uxen_err("malloc failed %ld", ver_data_size);
         goto exit;
     }
 
     err = GetFileVersionInfoA(file, 0, ver_data_size, ver_data);
     if (!err)
     {
-        debug_log("GetFileVersionInfo failed %ld", GetLastError());
+        uxen_err("GetFileVersionInfo failed %ld", GetLastError());
         goto exit;
     }
 
     err = VerQueryValueA(ver_data, "\\", (LPVOID*)&info, &info_size);
     if (!err)
     {
-        debug_log("VerQueryValueA failed %ld", GetLastError());
+        uxen_err("VerQueryValueA failed %ld", GetLastError());
         goto exit;
     }
 
-    debug_log("File info for: %s", file);
-    debug_log("  File    Version: %ld.%ld.%ld.%ld", (info->dwFileVersionMS >> 16) & 0xffff, info->dwFileVersionMS & 0xffff,
-                                                    (info->dwFileVersionLS >> 16) & 0xffff, info->dwFileVersionLS & 0xffff);
-    debug_log("  Product Version: %ld.%ld.%ld.%ld", (info->dwProductVersionMS >> 16) & 0xffff, info->dwProductVersionMS & 0xffff,
-                                                    (info->dwProductVersionLS >> 16) & 0xffff, info->dwProductVersionLS & 0xffff);
+    uxen_msg("File info for: %s", file);
+    uxen_msg("  File    Version: %ld.%ld.%ld.%ld", (info->dwFileVersionMS >> 16) & 0xffff, info->dwFileVersionMS & 0xffff,
+                                                   (info->dwFileVersionLS >> 16) & 0xffff, info->dwFileVersionLS & 0xffff);
+    uxen_msg("  Product Version: %ld.%ld.%ld.%ld", (info->dwProductVersionMS >> 16) & 0xffff, info->dwProductVersionMS & 0xffff,
+                                                   (info->dwProductVersionLS >> 16) & 0xffff, info->dwProductVersionLS & 0xffff);
 
 exit:
     if (ver_data)
         free(ver_data);
 }
 
-static int patch_driver(LPCSTR path)
+int scan_driver(LPCSTR path)
+{
+    int ret = 0;
+    struct file_map* file;
+    ULONG except_size = 0;
+    PIMAGE_IA64_RUNTIME_FUNCTION_ENTRY except = NULL;
+    DWORD data_start, data_end;
+
+    file = create_file_map(path, FALSE);
+    if (file == NULL) {
+        uxen_err("create_file_map file failed");
+        ret = -1;
+        goto exit;
+    }
+
+    except = (PIMAGE_IA64_RUNTIME_FUNCTION_ENTRY)
+        ImageDirectoryEntryToDataEx(file->view, FALSE, IMAGE_DIRECTORY_ENTRY_EXCEPTION, &except_size, NULL);
+    if (except == NULL) {
+        DWORD err = GetLastError();
+        uxen_err("ImageDirectoryEntryToDataEx IMAGE_DIRECTORY_ENTRY_EXCEPTION failed %ld", err);
+        ret = -2;
+        goto exit;
+    }
+
+    if (!find_section(file->view, ".data", &data_start, &data_end)) {
+        uxen_err("section .data not found");
+    } else {
+        HKEY hkey;
+        if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, "System\\CurrentControlSet\\Services\\uxenkmdod",
+                0, NULL, 0, KEY_ALL_ACCESS, NULL, &hkey, NULL) == ERROR_SUCCESS) {
+            RegSetValueEx(hkey, "DxgDataStart", 0, REG_DWORD, (void*)&data_start, sizeof(data_start));
+            RegSetValueEx(hkey, "DxgDataSize", 0, REG_DWORD, (void*)&data_end, sizeof(data_end));
+            RegCloseKey(hkey);
+        } else {
+            uxen_err("failed to open uxenkmdod key");
+        }
+    }
+exit:
+    UnmapViewOfFile(except);
+    destroy_file_map(&file);
+
+    return ret;
+}
+
+int patch_driver(LPCSTR path)
 {
     int ret = 0;
     struct file_map* file;
@@ -367,10 +442,10 @@ static int patch_driver(LPCSTR path)
     PVOID func;
     int patch = 0x909090C3;
 
-    file = create_file_map(path);
+    file = create_file_map(path, TRUE);
     if (file == NULL)
     {
-        debug_log("create_file_map file failed");
+        uxen_err("create_file_map file failed");
         ret = -1;
         goto exit;
     }
@@ -380,7 +455,7 @@ static int patch_driver(LPCSTR path)
     if (except == NULL)
     {
         DWORD err = GetLastError();
-        debug_log("ImageDirectoryEntryToDataEx IMAGE_DIRECTORY_ENTRY_EXCEPTION failed %ld", err);
+        uxen_err("ImageDirectoryEntryToDataEx IMAGE_DIRECTORY_ENTRY_EXCEPTION failed %ld", err);
         ret = -2;
         goto exit;
     }
@@ -388,12 +463,12 @@ static int patch_driver(LPCSTR path)
     func = find_function(file->view, except, except_size);
     if (func == NULL)
     {
-        debug_log("Unable to find ProcessVSyncTdrWorker");
+        uxen_err("Unable to find ProcessVSyncTdrWorker");
         ret = -3;
         goto exit;
     }
 
-    debug_log("Replacing 0x%x with 0x%x", *(int*)func, patch);
+    uxen_msg("Replacing 0x%x with 0x%x", *(int*)func, patch);
     memcpy(func, &patch, sizeof (patch));
 
 exit:
@@ -424,7 +499,7 @@ static int create_pvk(LPCSTR name)
     }
     if (!res)
     {
-        debug_log("CryptAcquireContextA failed 0x%lx", err);
+        uxen_err("CryptAcquireContextA failed 0x%lx", err);
         ret = -1;
         goto exit;
     }
@@ -433,7 +508,7 @@ static int create_pvk(LPCSTR name)
     if (!res)
     {
         err = GetLastError();
-        debug_log("CryptAcquireContextA failed 0x%lx", err);
+        uxen_err("CryptAcquireContextA failed 0x%lx", err);
         ret = -1;
         goto exit;
     }
@@ -442,7 +517,7 @@ static int create_pvk(LPCSTR name)
     if (!res)
     {
         err = GetLastError();
-        debug_log("CryptGenKey failed 0x%lx", err);
+        uxen_err("CryptGenKey failed 0x%lx", err);
         ret = -2;
         goto exit;
     }
@@ -451,7 +526,7 @@ static int create_pvk(LPCSTR name)
     if (!res)
     {
         err = GetLastError();
-        debug_log("CryptExportKey failed 0x%lx", err);
+        uxen_err("CryptExportKey failed 0x%lx", err);
         ret = -3;
         goto exit;
     }
@@ -459,7 +534,7 @@ static int create_pvk(LPCSTR name)
     key_blob = (PBYTE)malloc(key_len);
     if (!key_blob)
     {
-        debug_log("malloc failed %ld", key_len);
+        uxen_err("malloc failed %ld", key_len);
         ret = -4;
         goto exit;
     }
@@ -468,7 +543,7 @@ static int create_pvk(LPCSTR name)
     if (!res)
     {
         err = GetLastError();
-        debug_log("CryptExportKey failed 0x%lx", err);
+        uxen_err("CryptExportKey failed 0x%lx", err);
         ret = -5;
         goto exit;
     }
@@ -477,7 +552,7 @@ static int create_pvk(LPCSTR name)
     if (file == INVALID_HANDLE_VALUE)
     {
         err = GetLastError();
-        debug_log("CreateFileA failed 0x%lx", err);
+        uxen_err("CreateFileA failed 0x%lx", err);
         ret = -6;
         goto exit;
     }
@@ -486,7 +561,7 @@ static int create_pvk(LPCSTR name)
     if (!res)
     {
         err = GetLastError();
-        debug_log("WriteFile header failed 0x%lx", err);
+        uxen_err("WriteFile header failed 0x%lx", err);
         ret = -7;
         goto exit;
     }
@@ -495,7 +570,7 @@ static int create_pvk(LPCSTR name)
     if (!res)
     {
         err = GetLastError();
-        debug_log("WriteFile key length failed 0x%lx", err);
+        uxen_err("WriteFile key length failed 0x%lx", err);
         ret = -8;
         goto exit;
     }
@@ -504,7 +579,7 @@ static int create_pvk(LPCSTR name)
     if (!res)
     {
         err = GetLastError();
-        debug_log("WriteFile key failed 0x%lx", err);
+        uxen_err("WriteFile key failed 0x%lx", err);
         ret = -8;
         goto exit;
     }
@@ -525,7 +600,7 @@ exit:
     return ret;
 }
 
-static int sign_driver(LPCSTR file)
+int sign_driver(LPCSTR file)
 {
     int ret = 0;
     int tool_idx = 0;
@@ -534,7 +609,7 @@ static int sign_driver(LPCSTR file)
     ret = create_pvk(PVK_PART);
     if (ret < 0)
     {
-        debug_log("create_pvk failed %d", ret);
+        uxen_err("create_pvk failed %d", ret);
         goto exit;
     }
 
@@ -544,7 +619,7 @@ static int sign_driver(LPCSTR file)
         ret = run_cmd(tool[0], tool[1], tool[2]);
         if (ret < 0)
         {
-            debug_log("%s failed %d", tool[0], ret);
+            uxen_err("%s failed %d", tool[0], ret);
             break;
         }
     }
@@ -556,25 +631,6 @@ static int sign_driver(LPCSTR file)
 exit:
     return ret;
 }
-
-static void enable_vsync(void)
-{
-    LONG res = 0;
-    HKEY kmdod = 0;
-    LPCSTR path = "SYSTEM\\CurrentControlSet\\Services\\uxenkmdod\\vsync";
-
-    res = RegCreateKeyExA(HKEY_LOCAL_MACHINE, path, 0, NULL, 0, KEY_ALL_ACCESS, NULL, &kmdod, NULL);
-    if (res != ERROR_SUCCESS)
-    {
-        debug_log("RegOpenKeyEx failed %ld", res);
-        goto exit;
-    }
-
-exit:
-    if (kmdod != 0)
-        RegCloseKey(kmdod);
-}
-
 
 static int get_base_leaf(void)
 {
@@ -612,54 +668,62 @@ int main()
 
     Wow64DisableWow64FsRedirection(&old_value);
 
-    logging_init();
+    uxen_ud_set_progname("uxenpatcher");
+    uxen_ud_mask = UXEN_UD_ERR | UXEN_UD_MSG;
 
     features.blob = 0;
     cpuid_base_leaf = get_base_leaf();
     if (cpuid_base_leaf) {
         __cpuid(blob, cpuid_base_leaf + 193);
         features.blob = blob[0];
-        debug_log("patcher cpuid_base_leaf %d. dm-features: 0x%0I64x", cpuid_base_leaf, features.blob);
+        uxen_msg("patcher cpuid_base_leaf %d. dm-features: 0x%0I64x", cpuid_base_leaf, features.blob);
     }
 
     if (!features.bits.run_patcher)
     {
-        debug_log("patcher disabled in dm-features");
+        uxen_msg("patcher disabled in dm-features");
         return 0;
     }
 
-    debug_log("Backing up %s", DXGKRNL);
+    log_file_info(DXGKRNL);
+    ret = scan_driver(DXGKRNL);
+    if (ret < 0)
+    {
+        uxen_err("scan_driver failed %d", ret);
+        goto exit;
+    }
+#if 0
+    uxen_msg("Backing up %s", DXGKRNL);
     ret = backup_driver(DXGKRNL);
     if (ret < 0)
     {
-        debug_log("backup_driver failed %d", ret);
+        uxen_err("backup_driver failed %d", ret);
         goto exit;
     }
 
     log_file_info(DXGKRNL);
 
-    debug_log("Patching %s", DXGKRNL);
+    uxen_msg("Patching %s", DXGKRNL);
     ret = patch_driver(DXGKRNL);
     if (ret < 0)
     {
-        debug_log("patch_driver failed %d", ret);
+        uxen_err("patch_driver failed %d", ret);
         goto exit;
     }
 
-    debug_log("Signing %s", DXGKRNL);
+    uxen_msg("Signing %s", DXGKRNL);
     ret = sign_driver(DXGKRNL);
     if (ret < 0)
     {
-        debug_log("sign_driver failed %d", ret);
+        uxen_err("sign_driver failed %d", ret);
         goto exit;
     }
-
-    enable_vsync();
+#endif
 
 exit:
     if (ret != 0)
-        debug_log("Patching %s has failed with error %d", DXGKRNL, ret);
+        uxen_err("Patcher for %s has failed with error %d", DXGKRNL, ret);
     else
-        debug_log("Patching %s succeeded", DXGKRNL);
+        uxen_msg("Patcher for %s succeeded", DXGKRNL);
     return 0;
 }

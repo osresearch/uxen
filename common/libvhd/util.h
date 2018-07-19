@@ -114,9 +114,9 @@ _asprintf(char **strp, const char *fmt, ...)
     va_start(ap, fmt);
     while (1) {
 	ret = vsnprintf(*strp, buflen, fmt, ap);
-	if (ret >= 0 && ret <= buflen)
+	if (ret >= 0 && ret < buflen)
 	    break;
-	if (ret > buflen)
+	if (ret > 0 && ret > buflen)
 	    buflen = ret;
 	else
 	    buflen *= 2;

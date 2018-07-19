@@ -104,14 +104,14 @@ static void populate_physmap(struct memop_args *a)
     unsigned long j;
 #endif  /* __UXEN__ */
     xen_pfn_t gpfn, mfn;
-    struct domain *d = a->domain;
+    struct domain *d = a->domain, *curr_d = current->domain;
 
     if ( !guest_handle_subrange_okay(a->extent_list, a->nr_done,
                                      a->nr_extents-1) )
         return;
 
 #ifndef __UXEN__
-    if ( !multipage_allocation_permitted(current->domain, a->extent_order) )
+    if ( !multipage_allocation_permitted(curr_d, a->extent_order) )
         return;
 #else   /* __UXEN__ */
     if ( a->extent_order != 0 /* && !(a->memflags & MEMF_populate_on_demand) */ )
@@ -131,6 +131,10 @@ static void populate_physmap(struct memop_args *a)
 
         if ( a->memflags & MEMF_populate_on_demand )
         {
+            /* Disallow populating PoD pages on oneself. */
+            if ( d == curr_d )
+                goto out;
+
             if (guest_physmap_mark_populate_on_demand
                 (d, gpfn, a->extent_order,
                  (a->memflags & MEMF_populate_on_demand_dmreq ?
@@ -864,9 +868,16 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE(void) arg)
             return rc;
         }
 
-        if (get_domain(pd)) {
+        if (d->clone_of &&
+            !(d->clone_of == pd /*&& p2m_get_hostp2m(d)->clone_gpfn*/))
+            rc = -EINVAL;
+        else if (d->clone_of == pd || get_domain(pd)) {
             d->clone_of = pd;
             rc = p2m_clone(p2m_get_hostp2m(pd), d);
+            if (rc == -EAGAIN)
+                rc = hypercall_create_continuation(
+                    __HYPERVISOR_memory_op, "lh",
+                    op, arg);
         } else
             rc = -EEXIST;
 

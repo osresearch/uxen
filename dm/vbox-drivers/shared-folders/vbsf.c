@@ -16,6 +16,7 @@
  */
 
 #include <dm/config.h>
+#include <dm/dm.h>
 #include <winioctl.h>
 #ifdef UNITTEST
 # include "testcase/tstSharedFolderService.h"
@@ -27,6 +28,7 @@
 #include "shflhandle.h"
 #include "filecrypt_helper.h"
 #include "quota.h"
+#include "redir.h"
 
 #include <iprt/alloc.h>
 #include <iprt/assert.h>
@@ -45,6 +47,7 @@
 
 #include "rt/rt.h"
 #include "../internal/dir.h"
+#include "util.h"
 #include <dm/shared-folders.h>
 #include <inttypes.h>
 
@@ -301,37 +304,159 @@ static int vbsfPathCheckUcs(PSHFLSTRING pPath)
     return validate_ads_path(pPath);
 }
 
-static int vbsfBuildFullPathUcs(SHFLCLIENTDATA *pClient, SHFLROOT root, PSHFLSTRING pPath,
-                             uint32_t cbPath, wchar_t **ppszFullPath, uint32_t *pcbFullPathRoot,
-                             bool fWildCard, bool fPreserveLastComponent)
+static int
+shared_suffix_len(SHFLCLIENTDATA *client, SHFLROOT root)
 {
-    wchar_t *pszFullPath = NULL;
+    wchar_t *suffix = NULL;
+
+    vbsfMappingsQueryFileSuffix(client, root, &suffix);
+
+    return suffix ? wcslen(suffix) : 0;
+}
+
+static void
+scramble_host_path_inplace(SHFLCLIENTDATA *client, SHFLROOT root, wchar_t *path)
+{
+    wchar_t *suffix = NULL;
+
+    vbsfMappingsQueryFileSuffix(client, root, &suffix);
+    if (suffix)
+        wcscat(path, suffix);
+}
+
+static int
+unscramble_host_path_inplace(SHFLCLIENTDATA *client, SHFLROOT root, wchar_t *path)
+{
+    wchar_t *suffix = NULL;
+    int len = wcslen(path);
+
+    vbsfMappingsQueryFileSuffix(client, root, &suffix);
+    if (suffix) {
+        int suffix_len = wcslen(suffix);
+
+        if (len > suffix_len && !wcscmp(path + len - suffix_len, suffix)) {
+            path[len - suffix_len] = 0;
+
+            return len - suffix_len;
+        }
+    }
+
+    return len;
+}
+
+static int
+create_host_path(
+    SHFLCLIENTDATA *client, SHFLROOT root,
+    const wchar_t *root_path, int root_len,
+    const wchar_t *core_path, int core_len,
+    bool scramble_path,
+    wchar_t **out)
+{
+    int len = root_len + core_len + 1 + 1;
+
+    if (scramble_path)
+        len += shared_suffix_len(client, root);
+
+    wchar_t *full_path = (wchar_t *)RTMemAlloc(2 * len);
+    if (!full_path)
+        return VERR_NO_MEMORY;
+
+    /* root of path */
+    wcscpy(full_path, root_path);
+
+    /* insert separator if missing */
+    if (core_len > 0 && core_path[0] != '\\')
+        wcscat(full_path, L"\\");
+
+    /* core of path */
+    wcscat(full_path, core_path);
+
+    /* possibly scramble suffix */
+    if (scramble_path)
+        scramble_host_path_inplace(client, root, full_path);
+
+    *out = full_path;
+
+    return VINF_SUCCESS;
+}
+
+static int vbsfBuildHostPathEx(
+    SHFLCLIENTDATA *client, SHFLROOT root, bool is_file,
+    PSHFLSTRING pPath, uint32_t cbPath,
+    wchar_t **ppszFullPath, uint32_t *pcbFullPathRoot,
+    bool fWildCard, bool fPreserveLastComponent, bool fDontScrambleFilenames,
+    bool *out_path_is_scrambled)
+{
     int rc;
-    int len;
-    const wchar_t *pszRoot = vbsfMappingsQueryHostRoot(root);
-    if (!pszRoot) {
-        Log(("vbsfBuildFullPath: invalid root!\n"));
+
+    if (out_path_is_scrambled)
+        *out_path_is_scrambled = false;
+
+    const wchar_t *root_path = vbsfMappingsQueryHostRoot(root);
+    if (!root_path) {
+        Log(("vbsfBuildHostPath: invalid root!\n"));
         return VERR_INVALID_PARAMETER;
     }
+
     rc = vbsfPathCheckUcs(pPath);
     if (!RT_SUCCESS(rc)) {
         Log(("vbsfPathCheck_ucs failed!\n"));
         return rc;
     }
+
+    /* path redirection to outisde shared folder if configured */
+    wchar_t *redirected_path = sf_redirect_path(root, pPath->String.ucs2);
+    if (redirected_path) {
+        *ppszFullPath = redirected_path;
+        LogFlow(("vbsfBuildHostPath: redirected %ls -> %ls\n", pPath->String.ucs2, redirected_path));
+
+        return VINF_SUCCESS;
+    }
+
+    /* scramble host names for files, if file is in scramble mode and really is a file. */
+    int path_len = wcslen(pPath->String.ucs2);
+    if (!path_len)
+    {
+        is_file = false;
+    } else if (pPath->String.ucs2[path_len-1] == '\\' ||
+               pPath->String.ucs2[path_len-1] == '.')
+    { 
+        is_file = false;
+    } else if (path_len >= 2 && pPath->String.ucs2[path_len-1] == '.' &&
+                                pPath->String.ucs2[path_len-2] == '.')
+    {
+        is_file = false;
+    }
+
+    int scramble_path = is_file && (fDontScrambleFilenames ?
+        0 : _sf_has_opt(root, pPath->String.ucs2, SF_OPT_SCRAMBLE_FILENAMES));
+
+    int root_len = wcslen(root_path);
     if (pcbFullPathRoot)
-        *pcbFullPathRoot = wcslen(pszRoot);
-    len = 2 * (wcslen(pszRoot) + wcslen(pPath->String.ucs2) + 1 + 1);
-    pszFullPath = (wchar_t *)RTMemAlloc(len);
-    if (!pszFullPath)
-        return VERR_NO_MEMORY;
-    wcscpy(pszFullPath, pszRoot);
-    if (pPath->String.ucs2[0] != '\\')
-        wcscat(pszFullPath, L"\\");
-    wcscat(pszFullPath, pPath->String.ucs2);
-    *ppszFullPath = pszFullPath;
+        *pcbFullPathRoot = root_len;
+
+    rc = create_host_path(client, root, root_path, root_len, pPath->String.ucs2, path_len,
+                          scramble_path, ppszFullPath);
+    if (!RT_SUCCESS(rc))
+        return rc;
+
+    if (out_path_is_scrambled)
+        *out_path_is_scrambled = scramble_path;
+
+    LogFlow(("vbsfBuildHostPath: mapped %ls -> %ls\n", pPath->String.ucs2, *ppszFullPath));
+
     return VINF_SUCCESS;
 }
    
+static int vbsfBuildHostPath(
+    SHFLCLIENTDATA *client, SHFLROOT root, bool is_file,
+    PSHFLSTRING pPath, uint32_t cbPath,
+    wchar_t **ppszFullPath, uint32_t *pcbFullPathRoot,
+    bool fWildCard, bool fPreserveLastComponent)
+{
+    return vbsfBuildHostPathEx(client, root, is_file, pPath, cbPath,
+        ppszFullPath, pcbFullPathRoot, fWildCard, fPreserveLastComponent, false, NULL);
+}
 
 /**
  * Convert shared folder create flags (see include/iprt/shflsvc.h) into iprt create flags.
@@ -576,9 +701,10 @@ static int vbsfConvertFileOpenFlags(unsigned fShflFlags, RTFMODE fMode, SHFLHAND
  *                               created
  * @retval pParms->Info          On success the parameters of the file opened or created
  */
-static int vbsfOpenFile(SHFLCLIENTDATA *pClient, SHFLROOT root, const wchar_t *pszPath, SHFLCREATEPARMS *pParms)
+static int vbsfOpenFile(SHFLCLIENTDATA *pClient, SHFLROOT root, const wchar_t *pszPath,
+    const wchar_t *pszGuestPath, SHFLCREATEPARMS *pParms)
 {
-    LogFlow(("vbsfOpenFile: pszPath = %ls, pParms = %p\n", pszPath, pParms));
+    LogFlow(("vbsfOpenFile: pszPath = %ls (guest: %ls), pParms = %p\n", pszPath, pszGuestPath, pParms));
     Log(("SHFL create flags %08x\n", pParms->CreateFlags));
 
     SHFLHANDLE      handle = SHFL_HANDLE_NIL;
@@ -596,7 +722,7 @@ static int vbsfOpenFile(SHFLCLIENTDATA *pClient, SHFLROOT root, const wchar_t *p
     if (RT_SUCCESS(rc))
     {
         rc = VERR_NO_MEMORY;  /* Default error. */
-        handle  = vbsfAllocFileHandle(pClient, pszPath, fOpen);
+        handle  = vbsfAllocFileHandle(pClient, pszPath, pszGuestPath, fOpen);
         if (handle != SHFL_HANDLE_NIL)
         {
             pHandle = vbsfQueryFileHandle(pClient, handle);
@@ -605,7 +731,7 @@ static int vbsfOpenFile(SHFLCLIENTDATA *pClient, SHFLROOT root, const wchar_t *p
                 int already_exists = 0, created = 0, truncated = 0;
                 struct quota_op qop;
 
-                quota_start_op(&qop, pClient, root, SHFL_HANDLE_NIL, pszPath);
+                quota_start_op(&qop, pClient, root, SHFL_HANDLE_NIL, pszPath, pszGuestPath);
                 quota_set_delta(&qop, -quota_get_filesize(&qop));
 
                 rc = RTFileOpenUcs(&pHandle->file.Handle, pszPath, fOpen, &already_exists, &created,
@@ -666,7 +792,8 @@ static int vbsfOpenFile(SHFLCLIENTDATA *pClient, SHFLROOT root, const wchar_t *p
         case VERR_TOO_MANY_OPEN_FILES:
             if (cErrors < 32)
             {
-                LogRel(("SharedFolders host service: Cannot open '%s' -- too many open files.\n", pszPath));
+                LogRel(("SharedFolders host service: Cannot open '%s' -- too many open files.\n",
+                    hide_log_sensitive_data ? L"file" : pszPath));
 #if defined RT_OS_LINUX || RT_OS_SOLARIS
                 if (cErrors < 1)
                     LogRel(("SharedFolders host service: Try to increase the limit for open files (ulimit -n)\n"));
@@ -767,7 +894,7 @@ static int vbsfOpenFile(SHFLCLIENTDATA *pClient, SHFLROOT root, const wchar_t *p
 
         d = vbsfQueryHandleData(pClient, handle);
         if (d) {
-            d->folder_opts = _sf_get_opt(root, (wchar_t*)pszPath);
+            d->folder_opts = _sf_get_opt(root, (wchar_t*)pszGuestPath);
             if (d->folder_opts & SF_OPT_NO_FLUSH)
                 pParms->CreateFlags |= SHFL_CF_NO_FLUSH;
             LogFlow(("vbsfOpenFile: opts=0x%" PRIx64 "\n", d->folder_opts));
@@ -791,13 +918,13 @@ static int vbsfOpenFile(SHFLCLIENTDATA *pClient, SHFLROOT root, const wchar_t *p
  * @note folders are created with fMode = 0777
  */
 static int vbsfOpenDirUcs(SHFLCLIENTDATA *pClient, SHFLROOT root, const wchar_t *pszPath,
-                       SHFLCREATEPARMS *pParms)
+    const wchar_t *pszGuestPath, SHFLCREATEPARMS *pParms)
 {
-    LogFlow(("vbsfOpenDir: pszPath = %ls, pParms = %p\n", pszPath, pParms));
+    LogFlow(("vbsfOpenDir: pszPath = %ls (guest %ls), pParms = %p\n", pszPath, pszGuestPath, pParms));
     Log(("SHFL create flags %08x\n", pParms->CreateFlags));
 
     int rc = VERR_NO_MEMORY;
-    SHFLHANDLE      handle = vbsfAllocDirHandle(pClient);
+    SHFLHANDLE      handle  = vbsfAllocDirHandle(pClient, pszPath, pszGuestPath);
     SHFLFILEHANDLE *pHandle = vbsfQueryDirHandle(pClient, handle);
     if (0 != pHandle)
     {
@@ -1011,6 +1138,7 @@ void testCreate(RTTEST hTest)
  *       such as "no such file".  In this case, the caller should check the
  *       pParms->Result return value and whether pParms->Handle is valid.
  */
+
 int vbsfCreate(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pPath, uint32_t cbPath, SHFLCREATEPARMS *pParms)
 {
     int rc = VINF_SUCCESS;
@@ -1027,8 +1155,10 @@ int vbsfCreate(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pPath, uint32
      */
     wchar_t *pszFullPath = NULL;
     uint32_t cbFullPathRoot = 0;
+    bool scrambled_name = false;
 
-    rc = vbsfBuildFullPathUcs(pClient, root, pPath, cbPath, &pszFullPath, &cbFullPathRoot, false, false);
+    rc = vbsfBuildHostPathEx(pClient, root, !(pParms->CreateFlags & SHFL_CF_DIRECTORY),
+        pPath, cbPath, &pszFullPath, &cbFullPathRoot, false, false, false, &scrambled_name);
     if (RT_SUCCESS(rc))
     {
         /* Reset return value in case client forgot to do so.
@@ -1040,6 +1170,23 @@ int vbsfCreate(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pPath, uint32
         if (BIT_FLAG(pParms->CreateFlags, SHFL_CF_LOOKUP))
         {
             rc = vbsfLookupFile(pClient, root, pszFullPath, pParms);
+            if (RT_FAILURE(rc) && scrambled_name) {
+                /* try with unscrambled path */
+                wchar_t *pszFullPath2 = NULL;
+                uint32_t cbFullPathRoot2 = 0;
+
+                rc = vbsfBuildHostPathEx(pClient, root, !(pParms->CreateFlags & SHFL_CF_DIRECTORY),
+                    pPath, cbPath, &pszFullPath2, &cbFullPathRoot2, false, false, true, NULL);
+                if (RT_SUCCESS(rc)) {
+                    rc = vbsfLookupFile(pClient, root, pszFullPath2, pParms);
+
+                    if (RT_SUCCESS(rc)) {
+                        RTMemFree(pszFullPath);
+                        pszFullPath = pszFullPath2;
+                        cbFullPathRoot = cbFullPathRoot2;
+                    }
+                }
+            }
         }
         else
         {
@@ -1048,6 +1195,29 @@ int vbsfCreate(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pPath, uint32
 
             rc = RTPathQueryInfoExUcs(pszFullPath, &info, RTFSOBJATTRADD_NOTHING, SHFL_RT_LINK(pClient));
             LogFlow(("RTPathQueryInfoEx returned 0x%x\n", rc));
+
+            if (RT_FAILURE(rc) && scrambled_name) {
+                /* try with unscrambled path */
+                wchar_t *pszFullPath2 = NULL;
+                uint32_t cbFullPathRoot2 = 0;
+                int rc2 = vbsfBuildHostPathEx(pClient, root, !(pParms->CreateFlags & SHFL_CF_DIRECTORY),
+                    pPath, cbPath, &pszFullPath2, &cbFullPathRoot2, false, false, true, NULL);
+                if (RT_SUCCESS(rc2)) {
+                    rc2 = RTPathQueryInfoExUcs(pszFullPath2, &info, RTFSOBJATTRADD_NOTHING, SHFL_RT_LINK(pClient));
+                    LogFlow(("secondary RTPathQueryInfoEx returned 0x%x\n", rc));
+                    if (RT_SUCCESS(rc2)) {
+                        if (BIT_FLAG(info.Attr.fMode, RTFS_DOS_DIRECTORY)) {
+                            RTMemFree(pszFullPath);
+                            pszFullPath = pszFullPath2;
+                            cbFullPathRoot = cbFullPathRoot2;
+                            rc = rc2;
+                        } else {
+                            /* if not directory we need to use previous (potentially scrambled) result */
+                            RTMemFree(pszFullPath2);
+                        }
+                    }
+                }
+            }
 
             if (RT_SUCCESS(rc))
             {
@@ -1120,11 +1290,11 @@ int vbsfCreate(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pPath, uint32
             {
                 if (BIT_FLAG(pParms->CreateFlags, SHFL_CF_DIRECTORY))
                 {
-                    rc = vbsfOpenDirUcs(pClient, root, pszFullPath, pParms);
+                    rc = vbsfOpenDirUcs(pClient, root, pszFullPath, pPath->String.ucs2, pParms);
                 }
                 else
                 {
-                    rc = vbsfOpenFile(pClient, root, pszFullPath, pParms);
+                    rc = vbsfOpenFile(pClient, root, pszFullPath, pPath->String.ucs2, pParms);
                 }
             }
             else
@@ -1272,7 +1442,8 @@ test_re_write(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle)
             rc = fch_re_write_file(pClient, root, Handle);
             if (RT_FAILURE(rc)) {
                 LogRel(("shared-folders: rewrite of %ls (%llx) failed with %x\n",
-                        vbsfQueryHandlePath(pClient, Handle), Handle, rc));
+                    hide_log_sensitive_data ? L"file" : vbsfQueryHandlePath(pClient, Handle),
+                    Handle, rc));
                 return rc;
             }
         }
@@ -1296,8 +1467,6 @@ int vbsfWrite(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle, uint64_
         return VERR_INVALID_PARAMETER;
     }
 
-    Log(("vbsfWrite 0x%llx offset 0x%llx bytes %x\n", Handle, offset, *pcbBuffer));
-
     /* Is the guest allowed to write to this share?
      * XXX Actually this check was still done in vbsfCreate() -- RTFILE_O_WRITE cannot be set if vbsfMappingsQueryWritable() failed. */
     bool fWritable;
@@ -1317,7 +1486,7 @@ int vbsfWrite(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle, uint64_
     if (!pHandle)
         return VERR_INVALID_HANDLE;
     hostoffset = fch_host_fileoffset(pClient, root, Handle, offset);
-    quota_start_op(&qop, pClient, root, Handle, NULL);
+    quota_start_op(&qop, pClient, root, Handle, NULL, NULL);
     delta = hostoffset + *pcbBuffer - quota_get_filesize(&qop);
     if (delta > 0) {
         if (RT_FAILURE(quota_set_delta(&qop, delta))) {
@@ -1418,7 +1587,6 @@ int vbsfDirList(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle, SHFLS
     PSHFLDIRINFO   pSFDEntry;
     PRTUTF16       pwszString;
     PRTDIR         DirHandle;
-    int            crypt_mode;
 
     if (pHandle == 0 || pcbBuffer == 0 || pBuffer == 0)
     {
@@ -1454,7 +1622,7 @@ int vbsfDirList(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle, SHFLS
 
             Assert(pHandle->dir.pLastValidEntry == 0);
 
-            rc = vbsfBuildFullPathUcs(pClient, root, pPath, pPath->u16Size, &pszFullPath, NULL, true, false);
+            rc = vbsfBuildHostPath(pClient, root, false, pPath, pPath->u16Size, &pszFullPath, NULL, true, false);
 
             if (RT_SUCCESS(rc))
             {
@@ -1473,8 +1641,10 @@ int vbsfDirList(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle, SHFLS
         DirHandle = pHandle->dir.SearchHandle;
     }
 
-    crypt_mode = 0;
-    fch_query_crypt_by_path(pClient, root, DirHandle->pwszPath, &crypt_mode);
+    wchar_t *guest_path = vbsfQueryHandleGuestPath(pClient, Handle);
+    int scramble_filenames = _sf_has_opt(root, guest_path, SF_OPT_SCRAMBLE_FILENAMES);
+    int crypt_mode = 0;
+    fch_query_crypt_by_path(pClient, root, guest_path, &crypt_mode);
 
     while (cbBufferOrg)
     {
@@ -1508,7 +1678,8 @@ int vbsfDirList(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle, SHFLS
             }
         }
 
-        if (hidden(root, DirHandle->pwszPath, (wchar_t*)pDirEntry->szName))
+        if (hidden(root, vbsfQueryHandleGuestPath(pClient, Handle),
+                (wchar_t*)pDirEntry->szName))
             continue;
 
         cbNeeded = RT_OFFSETOF(SHFLDIRINFO, name.String);
@@ -1534,12 +1705,25 @@ int vbsfDirList(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle, SHFLS
         vbfsCopyFsObjInfoFromIprt(&pSFDEntry->Info, &pDirEntry->Info);
         pSFDEntry->cucShortName = 0;
 
-        
+        /* adjust reported file length for crypted files.
+         * HACK warning: to be fully correct it would need to inspect the file to see if it's
+         * actually scrambled or not. That's very slow for large directories, so we rely on current
+         * crypt settings for that folder instead */
+        if (crypt_mode && pSFDEntry->Info.cbObject >= CRYPT_HDR_FIXED_SIZE)
+            pSFDEntry->Info.cbObject -= CRYPT_HDR_FIXED_SIZE;
+
         pSFDEntry->name.String.ucs2[0] = 0;
         pwszString = pSFDEntry->name.String.ucs2;
         wcscpy(pwszString, (wchar_t*)pDirEntry->szName);
 
-        pSFDEntry->name.u16Length = (uint32_t)wcslen(pSFDEntry->name.String.ucs2) * 2;
+        /* adjust reported file name if we're using filename scrambling */
+        int len;
+        if (scramble_filenames)
+            len = unscramble_host_path_inplace(pClient, root, pwszString);
+        else
+            len = wcslen(pwszString);
+
+        pSFDEntry->name.u16Length = len * 2;
         pSFDEntry->name.u16Size = pSFDEntry->name.u16Length + 2;
 
         Log(("SHFL: File name size %d\n", pSFDEntry->name.u16Size));
@@ -1547,13 +1731,6 @@ int vbsfDirList(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE Handle, SHFLS
 
         // adjust cbNeeded (it was overestimated before)
         cbNeeded = RT_OFFSETOF(SHFLDIRINFO, name.String) + pSFDEntry->name.u16Size;
-
-        /* adjust reported file length for crypted files.
-         * HACK warning: to be fully correct it would need to inspect the file to see if it's
-         * actually scrambled or not. That's very slow for large directories, so we rely on current
-         * crypt settings for that folder instead */
-        if (crypt_mode && pSFDEntry->Info.cbObject >= CRYPT_HDR_FIXED_SIZE)
-            pSFDEntry->Info.cbObject -= CRYPT_HDR_FIXED_SIZE;
 
         pSFDEntry   = (PSHFLDIRINFO)((uintptr_t)pSFDEntry + cbNeeded);
         *pcbBuffer += cbNeeded;
@@ -1608,7 +1785,7 @@ int vbsfReadLink(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pPath, uint
     char *pszFullPath = NULL;
     uint32_t cbFullPathRoot = 0;
 
-    rc = vbsfBuildFullPath(pClient, root, pPath, cbPath, &pszFullPath, &cbFullPathRoot, false, false);
+    rc = vbsfBuildFullPath(pClient, root, pPath, cbPath, &pszFullPath, &cbFullPathRoot, false, false, NULL);
 
     if (RT_SUCCESS(rc))
     {
@@ -1831,7 +2008,7 @@ int resize_file(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLHANDLE handle,
     prev_sz = fileinfo.cbObject;
     fch_guest_fsinfo(pClient, root, handle, &fileinfo);
     prev_sz_guest = fileinfo.cbObject;
-    quota_start_op(&qop, pClient, root, handle, NULL);
+    quota_start_op(&qop, pClient, root, handle, NULL, NULL);
     if (RT_FAILURE(quota_set_delta(&qop, sz - prev_sz)))
         return VERR_DISK_FULL;
     rc = RTFileSetSize(pHandle->file.Handle, sz);
@@ -1931,7 +2108,7 @@ int vbsfQueryVolumeInfo(SHFLCLIENTDATA *pClient, SHFLROOT root, uint32_t flags, 
     pSFDEntry   = (PSHFLVOLINFO)pBuffer;
 
     ShflStringInitBuffer(&dummy, sizeof(dummy));
-    rc = vbsfBuildFullPathUcs(pClient, root, &dummy, 0, &pszFullPath, NULL, false, false);
+    rc = vbsfBuildHostPath(pClient, root, false, &dummy, 0, &pszFullPath, NULL, false, false);
 
     if (RT_SUCCESS(rc))
     {
@@ -2223,7 +2400,8 @@ int vbsfRemove(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pPath, uint32
      */
     wchar_t *pszFullPath = NULL;
 
-    rc = vbsfBuildFullPathUcs(pClient, root, pPath, cbPath, &pszFullPath, NULL, false, false);
+    rc = vbsfBuildHostPath(pClient, root, flags & SHFL_REMOVE_FILE,
+         pPath, cbPath, &pszFullPath, NULL, false, false);
     if (RT_SUCCESS(rc))
     {
         /* is the guest allowed to write to this share? */
@@ -2240,7 +2418,8 @@ int vbsfRemove(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pPath, uint32
             else if (flags & SHFL_REMOVE_FILE) {
                 struct quota_op qop;
 
-                quota_start_op(&qop, pClient, root, SHFL_HANDLE_NIL, pszFullPath);
+                quota_start_op(&qop, pClient, root, SHFL_HANDLE_NIL, pszFullPath,
+                    pPath->String.ucs2);
                 quota_set_delta(&qop, -quota_get_filesize(&qop));
                 rc = RTFileDeleteUcs(pszFullPath);
                 if (RT_SUCCESS(rc))
@@ -2288,12 +2467,13 @@ int vbsfRename(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pSrc, SHFLSTR
      */
     wchar_t *pszFullPathSrc = NULL;
     wchar_t *pszFullPathDest = NULL;
+    bool file = flags & SHFL_RENAME_FILE;
 
-    rc = vbsfBuildFullPathUcs(pClient, root, pSrc, pSrc->u16Size, &pszFullPathSrc, NULL, false, false);
+    rc = vbsfBuildHostPath(pClient, root, file, pSrc, pSrc->u16Size, &pszFullPathSrc, NULL, false, false);
     if (rc != VINF_SUCCESS)
         return rc;
 
-    rc = vbsfBuildFullPathUcs(pClient, root, pDest, pDest->u16Size, &pszFullPathDest, NULL, false, true);
+    rc = vbsfBuildHostPath(pClient, root, file, pDest, pDest->u16Size, &pszFullPathDest, NULL, false, true);
     if (RT_SUCCESS (rc))
     {
         Log(("Rename %ls to %ls\n", pszFullPathSrc, pszFullPathDest));
@@ -2309,8 +2489,23 @@ int vbsfRename(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pSrc, SHFLSTR
         {
             if (flags & SHFL_RENAME_FILE)
             {
-                rc = RTFileMoveUcs(pszFullPathSrc, pszFullPathDest,
-                                  ((flags & SHFL_RENAME_REPLACE_IF_EXISTS) ? RTFILEMOVE_FLAGS_REPLACE : 0));
+                int crypt_mode_src = 0;
+                int crypt_mode_dst = 0;
+                /* do we need to reencrypt the file being moved? */
+                fch_query_crypt_by_path(pClient, root, pSrc->String.ucs2, &crypt_mode_src);
+                fch_query_crypt_by_path(pClient, root, pDest->String.ucs2, &crypt_mode_dst);
+                if (crypt_mode_src == crypt_mode_dst)
+                    rc = RTFileMoveUcs(pszFullPathSrc, pszFullPathDest,
+                        ((flags & SHFL_RENAME_REPLACE_IF_EXISTS) ? RTFILEMOVE_FLAGS_REPLACE : 0));
+                else {
+                    Log(("rename %ls -> %ls with new crypt setting: %d\n", pszFullPathSrc,
+                            pszFullPathDest, crypt_mode_dst));
+                    rc = fch_rename_via_copy(pClient, pszFullPathSrc, pszFullPathDest,
+                        crypt_mode_dst, flags);
+                    if (rc)
+                        LogRel(("failed to rewrite target path with crypt mode %d: rc=%d\n",
+                                crypt_mode_dst, rc));
+                }
             }
             else
             {
@@ -2359,7 +2554,7 @@ int vbsfSymlink(SHFLCLIENTDATA *pClient, SHFLROOT root, SHFLSTRING *pNewPath, SH
     if (!fSymlinksCreate)
         return VERR_WRITE_PROTECT; /* XXX or VERR_TOO_MANY_SYMLINKS? */
 
-    rc = vbsfBuildFullPath(pClient, root, pNewPath, pNewPath->u16Size, &pszFullNewPath, NULL, false, false);
+    rc = vbsfBuildFullPath(pClient, root, pNewPath, pNewPath->u16Size, &pszFullNewPath, NULL, false, false, NULL);
     AssertRCReturn(rc, rc);
 
     rc = RTSymlinkCreate(pszFullNewPath, (const char *)pOldPath->String.utf8,

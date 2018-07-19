@@ -111,17 +111,8 @@
 #define X86_FEATURE_RDRAND 	(4*32+30) /* Digital Random Number Generator */
 #define X86_FEATURE_HYPERVISOR	(4*32+31) /* Running under some hypervisor */
 
-/* VIA/Cyrix/Centaur-defined CPU features, CPUID level 0xC0000001, word 5 */
-#define X86_FEATURE_XSTORE	(5*32+ 2) /* on-CPU RNG present (xstore insn) */
-#define X86_FEATURE_XSTORE_EN	(5*32+ 3) /* on-CPU RNG enabled */
-#define X86_FEATURE_XCRYPT	(5*32+ 6) /* on-CPU crypto (xcrypt insn) */
-#define X86_FEATURE_XCRYPT_EN	(5*32+ 7) /* on-CPU crypto enabled */
-#define X86_FEATURE_ACE2	(5*32+ 8) /* Advanced Cryptography Engine v2 */
-#define X86_FEATURE_ACE2_EN	(5*32+ 9) /* ACE v2 enabled */
-#define X86_FEATURE_PHE		(5*32+ 10) /* PadLock Hash Engine */
-#define X86_FEATURE_PHE_EN	(5*32+ 11) /* PHE enabled */
-#define X86_FEATURE_PMM		(5*32+ 12) /* PadLock Montgomery Multiplier */
-#define X86_FEATURE_PMM_EN	(5*32+ 13) /* PMM enabled */
+/* Intel-defined CPU features, CPUID level 0x00000007:0 (edx), word 5 */
+#define X86_FEATURE_SPEC_CTRL   (5*32+26) /* Control Speculation Control */
 
 /* More extended AMD flags: CPUID level 0x80000001, ecx, word 6 */
 #define X86_FEATURE_LAHF_LM     (6*32+ 0) /* LAHF/SAHF in long mode */
@@ -149,6 +140,7 @@
 #define X86_FEATURE_FSGSBASE	(7*32+ 0) /* {RD,WR}{FS,GS}BASE instructions */
 #define X86_FEATURE_SMEP	(7*32+ 7) /* Supervisor Mode Execution Protection */
 #define X86_FEATURE_ERMS	(7*32+ 9) /* Enhanced REP MOVSB/STOSB */
+#define X86_FEATURE_INVPCID     (7*32+10) /* Invalidate Process Context ID */
 #define X86_FEATURE_MPX		(7*32+14) /* Memory Protection eXentions */
 
 #define cpu_has(c, bit)		test_bit(bit, (c)->x86_capability)
@@ -216,6 +208,7 @@
 #define cpu_has_smep            boot_cpu_has(X86_FEATURE_SMEP)
 
 #define cpu_has_pcid            boot_cpu_has(X86_FEATURE_PCID)
+#define cpu_has_invpcid         boot_cpu_has(X86_FEATURE_INVPCID)
 
 #define cpu_has_ffxsr           ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) \
                                  && boot_cpu_has(X86_FEATURE_FFXSR))
@@ -235,6 +228,8 @@
 #define cpu_has_vmx		boot_cpu_has(X86_FEATURE_VMXE)
 
 #define cpu_has_cpuid_faulting	boot_cpu_has(X86_FEATURE_CPUID_FAULTING)
+
+#define cpu_has_spec_ctrl	boot_cpu_has(X86_FEATURE_SPEC_CTRL)
 
 #endif /* __ASM_I386_CPUFEATURE_H */
 

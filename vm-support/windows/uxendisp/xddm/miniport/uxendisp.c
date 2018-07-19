@@ -692,6 +692,7 @@ BOOLEAN StartIO(PVOID dev_ext, PVIDEO_REQUEST_PACKET packet)
         }
         break;
     case IOCTL_VIDEO_SET_POINTER_ATTR: {
+            BOOLEAN res = FALSE;
             PVIDEO_POINTER_ATTRIBUTES ptr_attr = packet->InputBuffer;
 
             if (packet->InputBufferLength < sizeof(*ptr_attr)) {
@@ -705,13 +706,17 @@ BOOLEAN StartIO(PVOID dev_ext, PVIDEO_REQUEST_PACKET packet)
                 goto err;
             }
 
-            if (ptr_attr->Enable)
-                hw_pointer_update(dev, ptr_attr->Width, ptr_attr->Height,
+            if (ptr_attr->Enable) {
+                res = hw_pointer_update(dev, ptr_attr->Width, ptr_attr->Height,
                                   ptr_attr->Column, ptr_attr->Row,
                                   ptr_attr->WidthInBytes, ptr_attr->Pixels,
                                   ptr_attr->Flags & VIDEO_MODE_COLOR_POINTER);
-            else
+                if (res == FALSE) {
+                    DBG_ERR("Setting cursor has failed. Most likely the size is too big: %dx%d", ptr_attr->Width, ptr_attr->Height);
+                }
+            } else {
                 hw_pointer_enable(dev, FALSE);
+            }
         }
         break;
     case IOCTL_VIDEO_SET_POINTER_POSITION: {

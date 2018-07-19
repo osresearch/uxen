@@ -3171,6 +3171,7 @@ static inline int vcpumask_to_pcpumask(
             vcpu_id += vcpu_bias;
             if ( (vcpu_id >= d->max_vcpus) )
                 return 0;
+            vcpu_id = array_index_nospec(vcpu_id, d->max_vcpus);
             if ( ((v = d->vcpu[vcpu_id]) != NULL) )
                 cpumask_or(pmask, pmask, v->vcpu_dirty_cpumask);
         }
@@ -5668,8 +5669,8 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE(void) arg)
                     zp_arg.zp[nr].zero_thread_addr;
                 break;
             case XEN_MEMORY_SET_ZERO_PAGE_ZERO_THREAD_MODE_cr3:
-                d->zp_ctxt[d->zp_nr].zero_thread_cr3 =
-                    zp_arg.zp[nr].zero_thread_cr3;
+                d->zp_ctxt[d->zp_nr].zero_thread_paging_base =
+                    zp_arg.zp[nr].zero_thread_paging_base;
                 break;
             }
             MEM_LOG("zp: vm zero page fn @ %"PRIxPTR" - %"PRIxPTR

@@ -66,6 +66,7 @@
 #include <asm/apic.h>
 #include <asm/debugger.h>
 #include <asm/xstate.h>
+#include <asm/hvm/ax.h>
 
 u32 svm_feature_flags;
 
@@ -88,6 +89,8 @@ static DEFINE_PER_CPU(unsigned long, host_msr_tsc_aux);
 static void svm_do_resume(struct vcpu *v);
 
 static void svm_execute(struct vcpu *);
+
+static void svm_do_suspend(struct vcpu *);
 
 static bool_t amd_erratum383_found __read_mostly;
 
@@ -946,7 +949,10 @@ static void svm_ctxt_switch_to(struct vcpu *v)
     svm_restore_dr(v);
 #endif  /* __UXEN_NOT_YET__ */
 
-    svm_vmsave(per_cpu(root_vmcb, cpu));
+    if (ax_present)
+        ax_svm_vmsave_root(v);
+    else
+        svm_vmsave(per_cpu(root_vmcb, cpu));
 #ifndef __UXEN__
     svm_vmload(vmcb);
 #else  /* __UXEN__ */
@@ -1238,6 +1244,9 @@ struct hvm_function_table * __init start_svm(void)
     bool_t printed = 0;
 
     if ( !test_bit(X86_FEATURE_SVM, &boot_cpu_data.x86_capability) )
+        return NULL;
+
+    if (ax_setup())
         return NULL;
 
     /* Sanity check hvm_io_bitmap */
@@ -2092,6 +2101,7 @@ static struct hvm_function_table __read_mostly svm_function_table = {
     .event_pending        = svm_event_pending,
     .do_pmu_interrupt     = svm_do_pmu_interrupt,
     .do_execute           = svm_execute,
+    .do_suspend           = svm_do_suspend,
     .pt_sync_domain       = svm_pt_sync_domain,
     .cpuid_intercept      = svm_cpuid_intercept,
     .wbinvd_intercept     = svm_wbinvd_intercept,
@@ -2133,12 +2143,18 @@ svm_execute(struct vcpu *v)
 
     ASSERT(v);
 
-    if (svm_asm_do_vmentry(v))
+    if (!ax_present && svm_asm_do_vmentry(v))
+        return;
+    if (ax_present && ax_svm_vmrun(v, vmcb, regs))
         return;
 
-    if ( paging_mode_hap(v->domain) )
+    if ( paging_mode_hap(v->domain) ) {
+        struct p2m_domain *p2m = p2m_get_hostp2m(v->domain);
+
         v->arch.hvm_vcpu.guest_cr[3] = v->arch.hvm_vcpu.hw_cr[3] =
             vmcb_get_cr3(vmcb);
+        p2m->virgin = 0;
+    }
 
     if ( nestedhvm_enabled(v->domain) && nestedhvm_vcpu_in_guestmode(v) )
         vcpu_guestmode = 1;
@@ -2568,6 +2584,11 @@ asmlinkage_abi void svm_restore_regs(void)
 
     vcpu_restore_fpu_lazy(current);
     assert_xcr0_state(XCR0_STATE_VM);
+}
+
+void
+svm_do_suspend(struct vcpu *v)
+{
 }
 
 /*

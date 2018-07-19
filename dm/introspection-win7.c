@@ -370,7 +370,7 @@ static void get_immutable_ranges()
     if (!ranges)
         return;
     guest_introspect_info.hdr.n_immutable_ranges = 
-        convert_list_to_ranges(immutable_pages, npages, ranges);
+        npages ? convert_list_to_ranges(immutable_pages, npages, ranges) : 0;
     guest_introspect_info.ranges = ranges;
     dump_ranges("", ranges, guest_introspect_info.hdr.n_immutable_ranges);
     free(immutable_pages);

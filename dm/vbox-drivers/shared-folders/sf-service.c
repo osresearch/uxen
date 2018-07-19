@@ -22,6 +22,7 @@
 #include "mappings.h"
 #include "shflhandle.h"
 #include "vbsf.h"
+#include "redir.h"
 #include <iprt/alloc.h>
 #include <iprt/string.h>
 #include <iprt/assert.h>
@@ -1174,16 +1175,17 @@ static DECLCALLBACK(int) svcHostCall (void *unused, uint32_t u32Function, uint32
             }
             else
             {
-                LogRel(("    Host path '%ls', map name '%ls', %s, automount=%s, create_symlinks=%s crypt=%s\n",
-                        ((SHFLSTRING *)paParms[0].u.pointer.addr)->String.ucs2,
-                        ((SHFLSTRING *)paParms[1].u.pointer.addr)->String.ucs2,
-                        RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_WRITABLE) ? "writable" : "read-only",
-                        RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_AUTOMOUNT) ? "true" : "false",
-                        RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_CREATE_SYMLINKS) ? "true" : "false",
-                        RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_CRYPT) ? "true" : "false"));
+                if (!hide_log_sensitive_data)
+                    LogRel(("    Host path '%ls', map name '%ls', %s, automount=%s, create_symlinks=%s crypt=%s\n",
+                            ((SHFLSTRING *)paParms[0].u.pointer.addr)->String.ucs2,
+                            ((SHFLSTRING *)paParms[1].u.pointer.addr)->String.ucs2,
+                            RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_WRITABLE) ? "writable" : "read-only",
+                            RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_AUTOMOUNT) ? "true" : "false",
+                            RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_CREATE_SYMLINKS) ? "true" : "false",
+                            RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_CRYPT) ? "true" : "false"));
 
                 /* Execute the function. */
-                rc = vbsfMappingsAdd(pFolderName, pMapName,
+                rc = vbsfMappingsAdd(pFolderName, pMapName, NULL,
                                      RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_WRITABLE),
                                      RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_AUTOMOUNT),
                                      RT_BOOL(fFlags & SHFL_ADD_MAPPING_F_CREATE_SYMLINKS),
@@ -1309,6 +1311,7 @@ int sf_VBoxHGCMSvcLoad (VBOXHGCMSVCFNTABLE *ptable)
         AssertRC(rc);
 
         vbsfMappingInit();
+        sf_redirect_init();
     }
 
     return rc;

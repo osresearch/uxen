@@ -23,6 +23,7 @@ unsigned int uxen_ud_mask = DEF_UXEN_UD_MASK;
 __declspec(selectany)
 char uxen_ud_progname[64] = "null";
 
+#ifndef _MSC_VER
 static inline void
 __user_dbg_out(unsigned int fun, unsigned int val)
 {
@@ -30,13 +31,35 @@ __user_dbg_out(unsigned int fun, unsigned int val)
 
     asm volatile ("cpuid": "+a" (fun), "=b" (ebx), "+c" (val), "=d" (edx)::"cc");
 }
+#else
+#include <intrin.h>
+
+static inline void
+__user_dbg_out(unsigned int fun, unsigned int val)
+{
+    union _ {
+        struct __ {
+            int eax;
+            int ebx;
+            int ecx;
+            int edx;
+        } regs;
+        int blob[4];
+    } cpu_info = {};
+
+    cpu_info.regs.eax = fun;
+    cpu_info.regs.ecx = val;
+    __cpuidex(cpu_info.blob, fun, val);
+}
+#endif
 
 #define __user_dbg_out_char(x) __user_dbg_out(UXEN_DEBUG_CPUID_8 , x)
 #define __user_dbg_out_uint(x) __user_dbg_out(UXEN_DEBUG_CPUID_32, x)
 
 static inline void uxen_ud_set_progname(const char *name)
 {
-    strncpy(uxen_ud_progname, name, sizeof(uxen_ud_progname));
+    memset(uxen_ud_progname, 0, sizeof(uxen_ud_progname));
+    memcpy(uxen_ud_progname, name, strlen(name));
 }
 
 #define UXEN_UD_PROGNAME uxen_ud_progname

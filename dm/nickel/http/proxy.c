@@ -196,7 +196,7 @@ proxy_cache_find(const char *schema, const char *domain, int port)
     buff_strtolower(url);
     pc = rb_tree_find_node(&cache_rbtree, url);
 out:
-    if (url) {
+    if (url && !hide_log_sensitive_data) {
         NETLOG5("%s: url %s %"PRIxPTR, __FUNCTION__, url,
                 (uintptr_t) (pc ? pc->proxy : NULL));
     }

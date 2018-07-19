@@ -25,6 +25,7 @@ UXENNET_DIR = $(DISTDIR_VM_SUPPORT)/uxennet
 UXENNULLNET_DIR = $(DISTDIR_VM_SUPPORT)/uxennullnet
 UXENHID_DIR = $(DISTDIR_VM_SUPPORT)/uxenhid
 UXENPATCHER_DIR = $(DISTDIR_VM_SUPPORT)/uxenpatcher
+UXENH264_DIR = $(DISTDIR_VM_SUPPORT)/uxenh264
 
 TARGETS = all dist clean
 
@@ -38,22 +39,19 @@ WIXFLAGS = -ext WixUIExtension.dll \
 	   -ext WixUtilExtension.dll
 
 ifeq ($(TARGET_VM_SUPPORT_BITS),32)
-DPINST_DIR = $(WINDDK_DIR)/redist/DIFx/dpinst/MultiLin/x86
-CERT_DIR = $(WINDDK_DIR)/bin/x86
+CERT_DIR = $(EWDK_KIT_DIR)/bin/x86
 WIX_LIBS = $(WIX_DIR)/difxapp_x86.wixlib
 CANDLE_FLAGS = -arch x86
 WIN64=no
 else
-DPINST_DIR = $(WINDDK_DIR)/redist/DIFx/dpinst/MultiLin/amd64
-CERT_DIR = $(WINDDK_DIR)/bin/amd64
+CERT_DIR = $(EWDK_KIT_DIR)/bin/x64
 WIX_LIBS = $(WIX_DIR)/difxapp_x64.wixlib
 CANDLE_FLAGS = -arch x64
 WIN64=yes
 endif
 
-WIX_INCLUDES = -ddpinstdir=$(DPINST_DIR) \
+WIX_INCLUDES = -delevatedir=$(ELEVATE_DIR) \
 	       -dcertdir=$(CERT_DIR) \
-	       -delevatedir=$(ELEVATE_DIR) \
 	       -dsrcdir=$(SRCDIR) \
 	       -duxenclipboarddir=$(UXENCLIPBOARD_DIR) \
 	       -duxendispdir=$(UXENDISP_DIR) \
@@ -71,14 +69,14 @@ WIX_INCLUDES = -ddpinstdir=$(DPINST_DIR) \
 	       -duxensvcdir=$(UXENSVC_DIR) \
 	       -dWin64=$(WIN64) \
 	       -duxenhiddir=$(UXENHID_DIR) \
-	       -duxenpatcherdir=$(UXENPATCHER_DIR)
+	       -duxenpatcherdir=$(UXENPATCHER_DIR) \
+	       -duxenh264dir=$(UXENH264_DIR)
 
-WIX_DEPS = $(SRC_DIR)/run_dpinst.vbs \
-	   $(DPINST_DIR)/dpinst.exe \
+
+WIX_DEPS = $(ELEVATE_DIR)/elevate.exe \
 	   $(CERT_DIR)/makecert.exe \
 	   $(CERT_DIR)/pvk2pfx.exe \
 	   $(CERT_DIR)/signtool.exe \
-	   $(ELEVATE_DIR)/elevate.exe \
 	   $(UXENCLIPBOARD_DIR)/uxenclipboard.exe \
 	   $(UXENDISP_DIR)/uxendisp.sys \
 	   $(UXENAUDIO_DIR)/uxenaudio.sys \
@@ -94,7 +92,9 @@ WIX_DEPS = $(SRC_DIR)/run_dpinst.vbs \
 	   $(UXENSTOR_DIR)/uxenstor.sys \
 	   $(UXENSVC_DIR)/uxensvc.exe \
 	   $(UXENHID_DIR)/uxenhid.sys \
-	   $(UXENPATCHER_DIR)/uxenpatcher.exe
+	   $(UXENPATCHER_DIR)/uxenpatcher.exe \
+	   $(UXENH264_DIR)/uxenh26432.dll \
+	   $(UXENH264_DIR)/uxenh26464.dll
 
 $(WIX_DEPS): $(UXENVMLIB_DIR)/uxenvmlib.sys $(UXENV4VLIB_DIR)/uxenv4vlib.sys
 
@@ -150,12 +150,14 @@ $(UXENHID_DIR)/uxenhid.sys:
 	$(MAKE) -C $(SRCDIR)/../uxenhid dist
 $(UXENPATCHER_DIR)/uxenpatcher.exe:
 	$(MAKE) -C $(SRCDIR)/../uxenpatcher dist
+$(UXENH264_DIR)/uxenh264.dll:
+	$(MAKE) -C $(SRCDIR)/../uxenh264 dist
 
 $(INSTALLER): $(INSTALLER_WIXOBJS) $(WIX_DEPS)
 	$(_W)echo Linking - $@
 	$(_V)$(call sign,$@,$(LIGHT) $(WIXFLAGS) $(WIX_LIBS) $< -o $@)
 
 %.wixobj: %.wxs
-	$(CANDLE) $(CANDLE_FLAGS) $(WIXFLAGS) $(WIX_INCLUDES) $< -o $@
+	$(_V)$(CANDLE) $(CANDLE_FLAGS) $(WIXFLAGS) $(WIX_INCLUDES) $< -o $@
 
 endif # MAKENOW

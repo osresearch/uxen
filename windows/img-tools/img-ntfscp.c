@@ -2124,10 +2124,6 @@ int main(int argc, char **argv)
 
     setprogname(argv[0]);
 
-    /* Don't bring up WER dialog box on segfault, exit with failure instead. */
-    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOALIGNMENTFAULTEXCEPT |
-            SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
-
     RTTimeNow(& runtimes.Total.t0);
     RTR3Init();
 

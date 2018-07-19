@@ -141,6 +141,8 @@ struct hvm_function_table {
 
     void (*do_execute)(struct vcpu *v);
 
+    void (*do_suspend)(struct vcpu *v);
+
     void (*pt_sync_domain)(struct domain *d);
 
     int  (*cpu_up_prepare)(unsigned int cpu);

@@ -1,6 +1,7 @@
 #ifdef IN_RING0
     #pragma  hdrstop
     #include "VBoxGuestR0LibSharedFolders.h"
+    #include "dbghlp.h"
 #else
     #include <VBox/VBoxGuest2.h>
     #include <VBox/VMMDev.h>
@@ -8,6 +9,7 @@
     #include <string.h>
     #define STATUS_NOT_IMPLEMENTED VERR_INVALID_PARAMETER
     #define STATUS_INFO_LENGTH_MISMATCH VINF_BUFFER_OVERFLOW
+    #define verify_on_stack(p)
 #endif
 
 #include "hgcm-limits.h"
@@ -18,6 +20,8 @@ typedef struct _Buf {
     bool really_produce;
     uint32_t input_size;
 } Buf;
+
+static int verify_dst_on_stack;
 
 static bool pointer_copy_needed(uint32_t type, bool is_client)
 {
@@ -44,6 +48,8 @@ static int consume(Buf*buf, char * dst, unsigned int size)
     /* two checks needed, to not let integer overflow thru */
     if (size > buf->input_size || size + buf->current_offset > buf->input_size)
         return STATUS_INFO_LENGTH_MISMATCH;
+    verify_on_stack(buf);
+    if (verify_dst_on_stack) verify_on_stack(dst);
     memcpy(dst, buf->buf + buf->current_offset, size);
     buf->current_offset += size;
     return 0;
@@ -104,14 +110,22 @@ int VbglHGCMCall_tcp_unmarshall(VBoxGuestHGCMCallInfo*info, char *hgcmBuf,
     uint32_t total_alloc = 0;
     Buf buffer = {hgcmBuf, 0, true, input_size};
 
+    verify_on_stack(info);
+    verify_on_stack(parms);
+
     for (i = 0; i < cParms; i++) {
         RETURN_ON_ERROR(consume_type(&buffer, type));
         parms[i].type = (HGCMFunctionParameterType)type;
+        verify_dst_on_stack = 0;
         switch (type) {
             case VMMDevHGCMParmType_32bit:
+                verify_dst_on_stack = 1;
+                verify_on_stack(&parms[i].u.value32);
                 RETURN_ON_ERROR(consume_type(&buffer, parms[i].u.value32));
                 break;
             case VMMDevHGCMParmType_64bit:
+                verify_dst_on_stack = 1;
+                verify_on_stack(&parms[i].u.value64);
                 RETURN_ON_ERROR(consume_type(&buffer, parms[i].u.value64));
                 break;
             case VMMDevHGCMParmType_LinAddr:

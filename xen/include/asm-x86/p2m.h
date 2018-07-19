@@ -383,11 +383,22 @@ struct p2m_domain {
     /* Highest guest frame that's ever been mapped in the p2m */
     unsigned long max_mapped_pfn;
 
+    unsigned long clone_gpfn;
+    s64 clone_time;
+
     uint16_t p2m_l1_cache_id;
 
     struct dspage_store *dsps;
 
     int virgin;
+    
+    int is_dying;
+
+    union {
+        struct {
+            unsigned long gc_decompressed_gpfn;
+        } template;
+    };
  
 #ifndef NDEBUG
     unsigned long compress_gpfn;
@@ -592,6 +603,9 @@ p2m_shared_teardown(struct p2m_domain *p2m);
 
 void
 p2m_teardown_compressed(struct p2m_domain *p2m);
+
+void
+p2m_pod_gc_template_pages_work(void *_d);
 
 
 /*

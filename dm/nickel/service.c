@@ -310,6 +310,9 @@ ni_prx_open(struct nickel *ni, bool udp, struct sockaddr_in saddr,
         else
             return NULL;
     }
+    if (daddr.sin_addr.s_addr == ni->loopback_redirect_addr.s_addr) {
+        daddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    }
     LIST_FOREACH(prx, &ni->prx_fwd, entry) {
         if (is_udp != prx->is_udp)
             continue;

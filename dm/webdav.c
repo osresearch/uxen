@@ -597,6 +597,7 @@ int dav_GET_OR_HEAD(DavClient *dc, int send_body)
     }
 
     if (stat(dc->canonical_filename, &st) < 0) {
+        debug_printf("webdav: error %d stating '%s'\n", errno, dc->canonical_filename);
         status = 404;
         goto error;
     }    
@@ -614,6 +615,7 @@ int dav_GET_OR_HEAD(DavClient *dc, int send_body)
 
     f = open(dc->canonical_filename, O_RDONLY | O_BINARY);
     if (f < 0) {
+        debug_printf("webdav: error %d opening '%s'\n", errno, dc->canonical_filename);
         status = 404;
         goto error;
     }

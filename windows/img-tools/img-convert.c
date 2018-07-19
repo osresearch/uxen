@@ -30,6 +30,7 @@ static int do_compact(disk_handle_t in, disk_handle_t out)
     ntfs_fd_t fd;
     ntfs_fs_t fs;
     ptbl_t ptbl;
+    uint64_t scnt, sect;
     int rc = VERR_FILE_IO_ERROR;
 
     printf(" - Copying MBR\n");
@@ -57,8 +58,16 @@ static int do_compact(disk_handle_t in, disk_handle_t out)
         printf(" - Partition #%d populated\n", i);
 
         if ( !disklib_ntfs_partition(part_type(p)) ) {
-            RTPrintf(" - not NTFS, skipping\n");
-            /* FIXME: should copy every sector */
+            RTPrintf(" - not NTFS, copying every sector\n");
+            scnt = part_num_sectors(p);
+            for (sect = 0; sect < scnt; sect++) {
+                if (!disk_read_sectors(in, sec, sect, 1, NULL)) {
+                    goto out;
+                }
+                if (!disk_write_sectors(out, sec, sect, 1)) {
+                    goto out;
+                }
+            }
             continue;
         }
 

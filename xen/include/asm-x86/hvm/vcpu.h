@@ -149,9 +149,13 @@ struct hvm_vcpu {
     bool_t              hcall_preempted_retry;
     bool_t              hcall_64bit;
 
+    bool_t              use_spec_ctrl;
+
     struct hvm_vcpu_asid n1asid;
 
     u32                 msr_tsc_aux;
+
+    unsigned long       msr_spec_ctrl;
 
     /* VPMU */
     struct vpmu_struct  vpmu;

@@ -190,7 +190,7 @@ alloc_pages_for_mdl_retry(uint32_t pages)
 
     while (allocated < pages) {
         PMDL submdl;
-        uint32_t subpages = pages;
+        uint32_t subpages = pages - allocated;
 
         submdl = alloc_partial_mdl_retry(&subpages);
         if (!submdl) {

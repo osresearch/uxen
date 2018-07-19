@@ -196,6 +196,19 @@ VOID gh_signaled(void)
     uxen_v4v_put_pde(pde);
 }
 
+VOID gh_set_thread_priority(LONG priority)
+{
+    xenv4v_extension_t *pde = uxen_v4v_get_pde();
+    if (!pde) return;
+
+    if (pde->virq_thread)
+        KeSetPriorityThread(pde->virq_thread, priority);
+    if (pde->notify_thread)
+        KeSetPriorityThread(pde->notify_thread, priority);
+
+    uxen_v4v_put_pde(pde);
+}
+
 
 static VOID
 gh_v4v_stop_device(PDEVICE_OBJECT fdo, xenv4v_extension_t *pde)
@@ -338,6 +351,7 @@ static NTSTATUS gh_add_device(PDRIVER_OBJECT driver_object)
                          status);
             break;
         }
+        KeSetPriorityThread(pde->virq_thread, LOW_REALTIME_PRIORITY);
         KeInitializeSpinLock(&pde->virq_lock);
 
         InitializeListHead(&pde->context_list);
@@ -378,6 +392,7 @@ static NTSTATUS gh_add_device(PDRIVER_OBJECT driver_object)
                          status);
             break;
         }
+        KeSetPriorityThread(pde->notify_thread, LOW_REALTIME_PRIORITY);
 
         ExInitializeNPagedLookasideList(&pde->dest_lookaside_list,
                                         NULL,

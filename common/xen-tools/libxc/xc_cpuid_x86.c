@@ -312,6 +312,7 @@ static void xc_cpuid_hvm_policy(
                     bitmaskof(X86_FEATURE_PCLMULQDQ) |
                     bitmaskof(X86_FEATURE_SSSE3) |
                     bitmaskof(X86_FEATURE_CX16) |
+                    bitmaskof(X86_FEATURE_PCID) |
                     bitmaskof(X86_FEATURE_SSE4_1) |
                     bitmaskof(X86_FEATURE_SSE4_2) |
                     bitmaskof(X86_FEATURE_POPCNT) |
@@ -363,10 +364,12 @@ static void xc_cpuid_hvm_policy(
         if ( input[1] == 0 ) {
             regs[1] &= (bitmaskof(X86_FEATURE_SMEP) |
                         bitmaskof(X86_FEATURE_ERMS) |
-                        bitmaskof(X86_FEATURE_FSGSBASE));
+                        bitmaskof(X86_FEATURE_FSGSBASE) |
+                        bitmaskof(X86_FEATURE_INVPCID));
+            regs[3] &= (bitmaskof(X86_FEATURE_SPEC_CTRL));
         } else
-            regs[1] = 0;
-        regs[0] = regs[2] = regs[3] = 0;
+            regs[1] = regs[3] = 0;
+        regs[0] = regs[2] = 0;
         break;
 
     case 0x0000000d:

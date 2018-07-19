@@ -37,6 +37,7 @@
 #include <xen/event.h>
 #include <xen/kernel.h>
 #include <xen/keyhandler.h>
+#include <asm/hvm/xen_pv.h>
 #include <asm/shadow.h>
 #include <asm/tboot.h>
 
@@ -103,6 +104,7 @@ static void __init vmx_display_features(void)
     P(cpu_has_vmx_vnmi, "Virtual NMI");
     P(cpu_has_vmx_msr_bitmap, "MSR direct-access bitmap");
     P(cpu_has_vmx_unrestricted_guest, "Unrestricted Guest");
+    P(cpu_has_vmx_invpcid, "Invalidate Process Context ID");
 #undef P
 
     if ( !printed )
@@ -202,7 +204,8 @@ static int vmx_init_vmcs_config(void)
                SECONDARY_EXEC_WBINVD_EXITING |
                SECONDARY_EXEC_ENABLE_EPT |
                SECONDARY_EXEC_ENABLE_RDTSCP |
-               SECONDARY_EXEC_PAUSE_LOOP_EXITING);
+               SECONDARY_EXEC_PAUSE_LOOP_EXITING |
+               SECONDARY_EXEC_ENABLE_INVPCID);
         if ( opt_vpid_enabled )
             opt |= SECONDARY_EXEC_ENABLE_VPID;
         if ( opt_unrestricted_guest_enabled )
@@ -412,7 +415,6 @@ static void vmx_clear_active_vmcs_ax(struct vcpu *v)
     while (!spin_trylock_irqsave(&vmx_clear_lock, flags2))
         rep_nop();
 
-
     while (ax_remote_vmclear(arch_vmx->vmcs_ma)) {
         /*VMCS in use, ax is working on it */
         spin_unlock_irqrestore(&vmx_clear_lock, flags2);
@@ -430,12 +432,12 @@ static void vmx_clear_active_vmcs_ax(struct vcpu *v)
 
     list_del(&arch_vmx->active_list);
 
-     if (cpu!=-1) {
-       if (per_cpu(current_vmcs_vmx,cpu) == arch_vmx)
-           per_cpu(current_vmcs_vmx,cpu) = NULL;
-       if (per_cpu(active_vmcs,cpu) == arch_vmx->vmcs)
-           per_cpu(active_vmcs,cpu) = NULL;
-     }
+    if (cpu!=-1) {
+        if (per_cpu(current_vmcs_vmx,cpu) == arch_vmx)
+            per_cpu(current_vmcs_vmx,cpu) = NULL;
+        if (per_cpu(active_vmcs,cpu) == arch_vmx->vmcs)
+            per_cpu(active_vmcs,cpu) = NULL;
+    }
 
     spin_unlock_irqrestore(&vmx_clear_lock, flags2);
     cpu_irq_restore(flags);
@@ -478,14 +480,13 @@ static void vmx_clear_vmcs(struct vcpu *v)
 {
     int cpu = v->arch.hvm_vmx.active_cpu;
 
-    if (cpu == -1) 
+    if (cpu == -1)
         return;
 
-    if (!ax_present) {
+    if (!ax_present)
         on_selected_cpus(cpumask_of(cpu), __vmx_clear_vmcs_isr, v, 1);
-    } else {
+    else
         vmx_clear_active_vmcs_ax(v);
-    }
 }
 
 static void vmx_load_vmcs(struct vcpu *v)
@@ -494,15 +495,17 @@ static void vmx_load_vmcs(struct vcpu *v)
     int do_load = !vmx_vmcs_late_load;
 
     if (ax_present)
-      spin_lock_irqsave(&vmx_clear_lock, flags2);
+        spin_lock_irqsave(&vmx_clear_lock, flags2);
     cpu_irq_save(flags);
 
     if (vmx_vmcs_late_load && !v->arch.hvm_vmx.vmentry_gen)
         do_load = 1;
 
     if (v->arch.hvm_vmx.active_cpu != smp_processor_id()) {
-        if (v->arch.hvm_vmx.active_cpu != -1) 
+        if (ax_present && v->arch.hvm_vmx.active_cpu != -1) {
+            spin_unlock_irqrestore(&vmx_clear_lock, flags2);
             BUG();
+        }
 
         ASSERT(v->arch.hvm_vmx.active_cpu == -1);
         list_add(&v->arch.hvm_vmx.active_list, &this_cpu(active_vmcs_list));
@@ -521,8 +524,10 @@ static void vmx_load_vmcs(struct vcpu *v)
 
     cpu_irq_restore(flags);
     if (ax_present)
-      spin_unlock_irqrestore(&vmx_clear_lock, flags2);
+        spin_unlock_irqrestore(&vmx_clear_lock, flags2);
 }
+
+static void __vmx_clear_vmcs(void *info);
 
 void vmx_unload_vmcs(struct vcpu *v)
 {
@@ -530,7 +535,7 @@ void vmx_unload_vmcs(struct vcpu *v)
     unsigned long flags, flags2 = 0;
 
     if (ax_present)
-      spin_lock_irqsave(&vmx_clear_lock, flags2);
+        spin_lock_irqsave(&vmx_clear_lock, flags2);
     cpu_irq_save(flags);
 
     ASSERT(arch_vmx == this_cpu(current_vmcs_vmx));
@@ -538,9 +543,12 @@ void vmx_unload_vmcs(struct vcpu *v)
 
     this_cpu(current_vmcs_vmx) = NULL;
 
+    if (!ax_present) /* maybe or maybenot? need to check perf */
+        __vmx_clear_vmcs(v);
+
     cpu_irq_restore(flags);
     if (ax_present)
-      spin_unlock_irqrestore(&vmx_clear_lock, flags2);
+        spin_unlock_irqrestore(&vmx_clear_lock, flags2);
 }
 
 int vmx_cpu_up_prepare(unsigned int cpu)
@@ -576,7 +584,7 @@ int vmx_cpu_on(void)
     if (this_cpu(hvmon)) {
         cpu_irq_restore(flags);
         if (ax_present)
-          spin_unlock_irqrestore(&vmx_clear_lock, flags2);
+            spin_unlock_irqrestore(&vmx_clear_lock, flags2);
         return 0;
     }
 
@@ -590,7 +598,7 @@ int vmx_cpu_on(void)
     case -2: /* #UD or #GP */
         cpu_irq_restore(flags);
         if (ax_present)
-          spin_unlock_irqrestore(&vmx_clear_lock, flags2);
+            spin_unlock_irqrestore(&vmx_clear_lock, flags2);
         printk("CPU%d: unexpected VMXON failure\n", cpu);
         return -EINVAL;
     case -1: /* CF==1 or ZF==1 */
@@ -598,11 +606,12 @@ int vmx_cpu_on(void)
         this_cpu(hvmon) = hvmon_on;
         break;
     default:
+        spin_unlock_irqrestore(&vmx_clear_lock, flags2);
         BUG();
     }
     cpu_irq_restore(flags);
     if (ax_present)
-      spin_unlock_irqrestore(&vmx_clear_lock, flags2);
+        spin_unlock_irqrestore(&vmx_clear_lock, flags2);
 
     hvm_asid_init(cpu_has_vmx_vpid ? (1u << VMCS_VPID_WIDTH) : 0);
 
@@ -623,14 +632,14 @@ void vmx_cpu_off(void)
     unsigned long flags, flags2 = 0;
 
     if (ax_present)
-      spin_lock_irqsave(&vmx_clear_lock, flags2);
+        spin_lock_irqsave(&vmx_clear_lock, flags2);
     cpu_irq_save(flags);
 
     /* only turn off if turned on via vmx_cpu_on */
     if ( this_cpu(hvmon) != hvmon_on ) {
         cpu_irq_restore(flags);
         if (ax_present)
-          spin_unlock_irqrestore(&vmx_clear_lock, flags2);
+            spin_unlock_irqrestore(&vmx_clear_lock, flags2);
         return;
     }
 
@@ -646,7 +655,7 @@ void vmx_cpu_off(void)
 
     cpu_irq_restore(flags);
     if (ax_present)
-      spin_unlock_irqrestore(&vmx_clear_lock, flags2);
+        spin_unlock_irqrestore(&vmx_clear_lock, flags2);
 }
 
 int vmx_cpu_up(enum hvmon hvmon_mode)
@@ -745,6 +754,9 @@ int vmx_cpu_up(enum hvmon hvmon_mode)
 
     if ( cpu_has_vmx_vpid )
         vpid_sync_all();
+
+    if (ax_pv_vmcs_enabled)
+        ax_pv_vmcs_setup();
 
     return 0;
 }
@@ -1023,11 +1035,25 @@ static int construct_vmcs(struct vcpu *v)
     {
         v->arch.hvm_vmx.secondary_exec_control &= 
             ~(SECONDARY_EXEC_ENABLE_EPT | 
-              SECONDARY_EXEC_UNRESTRICTED_GUEST);
+              SECONDARY_EXEC_UNRESTRICTED_GUEST |
+              SECONDARY_EXEC_ENABLE_INVPCID);
         vmexit_ctl &= ~(VM_EXIT_SAVE_GUEST_PAT |
                         VM_EXIT_LOAD_HOST_PAT);
         vmentry_ctl &= ~VM_ENTRY_LOAD_GUEST_PAT;
     }
+
+#if 0
+    /* XXX Ideally we'd check here if the guest cpuid flag for invpcid
+       is set, but alas there is no interface for that, since
+       the *_cpuid functions use current. */
+    if (cpu_has_vmx_invpcid) {
+        unsigned int eax, ebx, ecx = 0, edx;
+        hvm_cpuid(7, &eax, &ebx, &ecx, &edx);
+        if (!(ebx & cpufeat_mask(X86_FEATURE_INVPCID)))
+            v->arch.hvm_vmx.secondary_exec_control &=
+                ~(SECONDARY_EXEC_ENABLE_INVPCID);
+    }
+#endif
 
     /* Do not enable Monitor Trap Flag unless start single step debug */
     v->arch.hvm_vmx.exec_control &= ~CPU_BASED_MONITOR_TRAP_FLAG;
@@ -1067,6 +1093,8 @@ static int construct_vmcs(struct vcpu *v)
         vmx_disable_intercept_for_msr(v, MSR_IA32_SYSENTER_EIP);
         if ( cpu_has_vmx_pat && paging_mode_hap(d) )
             vmx_disable_intercept_for_msr(v, MSR_IA32_CR_PAT);
+        if (cpu_has_spec_ctrl)
+            vmx_disable_intercept_for_msr(v, MSR_IA32_PRED_CMD);
 
         vmx_disable_intercept_for_msr(v, MSR_SHADOW_GS_BASE);
     }
@@ -1438,16 +1466,6 @@ void vmx_destroy_vmcs(struct vcpu *v)
     free_xenheap_page(v->arch.hvm_vmx.host_msr_area);
     free_xenheap_page(v->arch.hvm_vmx.msr_area);
     free_xenheap_page(v->arch.hvm_vmx.msr_bitmap);
-}
-
-asmlinkage_abi void vm_entry_fail(uintptr_t resume)
-{
-    unsigned long error = __vmread(VM_INSTRUCTION_ERROR);
-
-    printk("<vm_%s_fail> error code %lx\n",
-           resume ? "resume" : "launch", error);
-    vmcs_dump_vcpu(current);
-    __domain_crash(current->domain);
 }
 
 #ifndef __UXEN__
@@ -2347,23 +2365,11 @@ verify_pv_xen_vmcs_layout(void)
 static int
 setup_pv_vmcs_access_xen(void)
 {
-    uint32_t eax = 0, ebx, ecx, edx;
+    uint32_t eax, ebx, ecx, edx;
     uint32_t leaf;
-    char signature[13];
 
-    for (leaf = 0; leaf < PV_VMX_XEN_CPUID_LEAF_RANGE;
-         leaf += PV_VMX_XEN_CPUID_LEAD_SKIP) {
-        cpuid(PV_VMX_XEN_CPUID_LEAF_BASE + leaf, &eax,
-              (uint32_t *)&signature[0], (uint32_t *)&signature[4],
-              (uint32_t *)&signature[8]);
-        signature[12] = 0;
-
-        if (!strcmp(signature, "XenVMMXenVMM"))
-            break;
-    }
-
-    if (leaf >= PV_VMX_XEN_CPUID_LEAF_RANGE ||
-        (eax - (PV_VMX_XEN_CPUID_LEAF_BASE + leaf)) < 2)
+    leaf = running_on_xen(&eax);
+    if (leaf == (uint32_t)-1)
         return -1;
 
     cpuid(PV_VMX_XEN_CPUID_LEAF_BASE + leaf + 1, &eax,
@@ -2943,6 +2949,15 @@ void
 setup_pv_vmcs_access(void)
 {
     int ret;
+
+    if (ax_has_pv_vmcs && ax_pv_vmcs_setup()) {
+        __vmread_fn = ax_pv_vmcs_read;
+        __vmwrite_fn = ax_pv_vmcs_write;
+        __vmread_safe_fn = ax_pv_vmcs_read_safe;
+
+        vmx_vmcs_late_load = 0;
+	return;
+    }
 
     if (!boot_cpu_has(X86_FEATURE_HYPERVISOR))
         return;

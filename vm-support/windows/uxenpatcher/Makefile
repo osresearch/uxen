@@ -28,7 +28,7 @@ $(patsubst %,install_%,$(INSTALL_FILES)): install_%: %
 	$(_V)$(call install_exe,$(<),$(INSTALL_DIR))
 dist: $(patsubst %,install_%,$(INSTALL_FILES))
 
-UXENPATCHER_OBJS = patcher.o logging.o defroute.o
+UXENPATCHER_OBJS = patcher.o
 
 $(UXENPATCHER_OBJS): .deps/.exists
 

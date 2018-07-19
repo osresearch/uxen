@@ -166,7 +166,7 @@ static void show_guest_stack(struct vcpu *v, struct cpu_user_regs *regs)
             if ( vcpu->arch.cr3 == addr )
                 break;
 #else
-        vcpu = maddr_get_owner(read_cr3()) == v->domain ? v : NULL;
+        vcpu = maddr_get_owner(read_paging_base()) == v->domain ? v : NULL;
 #endif
         if ( !vcpu )
         {
@@ -1276,7 +1276,7 @@ enum pf_type {
 static enum pf_type __page_fault_type(
     unsigned long addr, unsigned int error_code)
 {
-    unsigned long mfn, cr3 = read_cr3();
+    unsigned long mfn, cr3 = read_paging_base();
 #if CONFIG_PAGING_LEVELS >= 4
     l4_pgentry_t l4e, *l4t;
 #endif
@@ -3681,6 +3681,7 @@ int guest_has_trap_callback(struct domain *d, uint16_t vcpuid, unsigned int trap
     /* Sanity check - XXX should be more fine grained. */
     BUG_ON(trap_nr > TRAP_syscall);
 
+    vcpuid = array_index_nospec(vcpuid, d->max_vcpus);
     v = d->vcpu[vcpuid];
     t = &v->arch.pv_vcpu.trap_ctxt[trap_nr];
 
@@ -3695,6 +3696,7 @@ int send_guest_trap(struct domain *d, uint16_t vcpuid, unsigned int trap_nr)
 
     BUG_ON(d == NULL);
     BUG_ON(vcpuid >= d->max_vcpus);
+    vcpuid = array_index_nospec(vcpuid, d->max_vcpus);
     v = d->vcpu[vcpuid];
 
     switch (trap_nr) {

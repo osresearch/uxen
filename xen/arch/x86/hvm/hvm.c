@@ -130,8 +130,10 @@ static int __init hvm_enable(void)
 
     BUILD_BUG_ON(UI_HVM_IO_BITMAP_SIZE != IOPM_SIZE);
 
-    if (opt_hvmonoff)
+    if (opt_hvmonoff) {
         hvmon_default = hvmon_on;
+        printk("hvmonoff is enabled\n");
+    }
 
     switch ( boot_cpu_data.x86_vendor )
     {
@@ -348,6 +350,8 @@ void hvm_do_suspend(struct vcpu *v)
 {
     if (!list_empty(&v->arch.hvm_vcpu.tm_list))
         pt_save_timer(v);
+
+    hvm_funcs.do_suspend(v);
 }
 
 void hvm_do_resume(struct vcpu *v)
@@ -1165,12 +1169,15 @@ static int hvm_load_cpu_ctxt(struct domain *d, hvm_domain_context_t *h)
 
     /* Which vcpu is this? */
     vcpuid = hvm_load_instance(h);
-    if ( vcpuid >= d->max_vcpus || (v = d->vcpu[vcpuid]) == NULL )
-    {
+    if (vcpuid >= d->max_vcpus) {
+      no_vcpu:
         gdprintk(XENLOG_ERR, "HVM restore: no vcpu vm%u.%u\n", d->domain_id,
                  vcpuid);
         return -EINVAL;
     }
+    vcpuid = array_index_nospec(vcpuid, d->max_vcpus);
+    if ((v = d->vcpu[vcpuid]) == NULL)
+        goto no_vcpu;
 
     /* Need to init this vcpu before loading its contents */
     rc = 0;
@@ -1387,12 +1394,15 @@ static int hvm_load_cpu_xsave_states(struct domain *d, hvm_domain_context_t *h)
 
     /* Which vcpu is this? */
     vcpuid = hvm_load_instance(h);
-    if ( vcpuid >= d->max_vcpus || (v = d->vcpu[vcpuid]) == NULL )
-    {
+    if (vcpuid >= d->max_vcpus) {
+      no_vcpu:
         gdprintk(XENLOG_ERR, "HVM restore: no vcpu vm%u.%u\n", d->domain_id,
                  vcpuid);
         return -EINVAL;
     }
+    vcpuid = array_index_nospec(vcpuid, d->max_vcpus);
+    if ((v = d->vcpu[vcpuid]) == NULL)
+        goto no_vcpu;
 
     /* Fails since we can't restore an img saved on xsave-capable host. */
     if ( !xsave_enabled(v) )
@@ -1813,7 +1823,8 @@ hvm_pod_zp_prefix(struct vcpu *v, unsigned long gpfn, p2m_type_t *t,
     }
         break;
     case XEN_MEMORY_SET_ZERO_PAGE_ZERO_THREAD_MODE_cr3:
-        if (v->arch.hvm_vcpu.guest_cr[3] == ctxt->zero_thread_cr3)
+        if ((v->arch.hvm_vcpu.guest_cr[3] & PAGE_MASK) ==
+            ctxt->zero_thread_paging_base)
             zeromode = p2m_zeroshare;
         else
             zeromode = p2m_zeropop;
@@ -3502,6 +3513,12 @@ void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
               *ebx &= ~cpufeat_mask(X86_FEATURE_SMEP);
 
             *ebx &= ~cpufeat_mask(X86_FEATURE_MPX);
+
+            if (!cpu_has_vmx_invpcid)
+                *ebx &= ~cpufeat_mask(X86_FEATURE_INVPCID);
+
+            if (!cpu_has_spec_ctrl || !cpu_has_vmx_msr_bitmap)
+                *edx &= ~cpufeat_mask(X86_FEATURE_SPEC_CTRL);
         }
         break;
     case 0xb:
@@ -3954,13 +3971,15 @@ typedef unsigned long hvm_hypercall_t(
     unsigned long, unsigned long, unsigned long, unsigned long, unsigned long,
     unsigned long);
 
+#ifndef __UXEN__
 #define HYPERCALL(x)                                        \
     [ __HYPERVISOR_ ## x ] = (hvm_hypercall_t *) do_ ## x
+#endif  /* __UXEN__ */
 
 #if defined(__i386__)
 
-static hvm_hypercall_t *hvm_hypercall32_table[NR_hypercalls] = {
 #ifndef __UXEN__
+static hvm_hypercall_t *hvm_hypercall32_table[NR_hypercalls] = {
     [ __HYPERVISOR_memory_op ] = (hvm_hypercall_t *)hvm_memory_op,
     [ __HYPERVISOR_grant_table_op ] = (hvm_hypercall_t *)hvm_grant_table_op,
     [ __HYPERVISOR_vcpu_op ] = (hvm_hypercall_t *)hvm_vcpu_op,
@@ -3973,14 +3992,8 @@ static hvm_hypercall_t *hvm_hypercall32_table[NR_hypercalls] = {
     HYPERCALL(sysctl),
     HYPERCALL(tmem_op),
     HYPERCALL(v4v_op)
-#else   /* __UXEN__ */
-    [ __HYPERVISOR_memory_op ] = (hvm_hypercall_t *)hvm_memory_op,
-    HYPERCALL(xen_version),
-    [ __HYPERVISOR_hvm_op ] = (hvm_hypercall_t *)do_hvm_hvm_op,
-    [ __HYPERVISOR_sched_op ] = (hvm_hypercall_t *)do_hvm_sched_op,
-    [ __HYPERVISOR_v4v_op ] = (hvm_hypercall_t *)do_v4v_op,
-#endif  /* __UXEN__ */
 };
+#endif  /* __UXEN__ */
 
 #else /* defined(__x86_64__) */
 
@@ -4059,8 +4072,8 @@ DEBUG();
 }
 #endif  /* __UXEN__ */
 
-static hvm_hypercall_t *hvm_hypercall64_table[NR_hypercalls] = {
 #ifndef __UXEN__
+static hvm_hypercall_t *hvm_hypercall64_table[NR_hypercalls] = {
     [ __HYPERVISOR_memory_op ] = (hvm_hypercall_t *)hvm_memory_op,
     [ __HYPERVISOR_grant_table_op ] = (hvm_hypercall_t *)hvm_grant_table_op,
     [ __HYPERVISOR_vcpu_op ] = (hvm_hypercall_t *)hvm_vcpu_op,
@@ -4073,14 +4086,8 @@ static hvm_hypercall_t *hvm_hypercall64_table[NR_hypercalls] = {
     HYPERCALL(sysctl),
     HYPERCALL(tmem_op),
     HYPERCALL(v4v_op)
-#else   /* __UXEN__ */
-    [ __HYPERVISOR_memory_op ] = (hvm_hypercall_t *)hvm_memory_op,
-    HYPERCALL(xen_version),
-    [ __HYPERVISOR_hvm_op ] = (hvm_hypercall_t *)do_hvm_hvm_op,
-    [ __HYPERVISOR_sched_op ] = (hvm_hypercall_t *)do_hvm_sched_op,
-    [ __HYPERVISOR_v4v_op ] = (hvm_hypercall_t *)do_v4v_op,
-#endif  /* __UXEN__ */
 };
+#endif  /* __UXEN__ */
 
 #ifndef __UXEN__
 #define COMPAT_CALL(x)                                        \
@@ -4100,8 +4107,6 @@ static hvm_hypercall_t *hvm_hypercall32_table[NR_hypercalls] = {
     HYPERCALL(tmem_op),
     HYPERCALL(v4v_op)
 };
-#else   /* __UXEN__ */
-#define hvm_hypercall32_table hvm_hypercall64_table
 #endif  /* __UXEN__ */
 
 #endif /* defined(__x86_64__) */
@@ -4134,7 +4139,7 @@ int hvm_do_hypercall(struct cpu_user_regs *regs)
     if ( (eax & 0x80000000) && is_viridian_domain(curr->domain) )
         return viridian_hypercall(regs);
 
-    if ( (eax >= NR_hypercalls) || !hvm_hypercall32_table[eax] )
+    if ( (eax >= NR_hypercalls) )
     {
         regs->eax = -ENOSYS;
         return HVM_HCALL_completed;
@@ -4151,12 +4156,26 @@ int hvm_do_hypercall(struct cpu_user_regs *regs)
                     regs->r10, regs->r8, regs->r9);
 
         curr->arch.hvm_vcpu.hcall_64bit = 1;
-        regs->rax = hvm_hypercall64_table[eax](regs->rdi,
-                                               regs->rsi,
-                                               regs->rdx,
-                                               regs->r10,
-                                               regs->r8,
-                                               regs->r9); 
+
+#define HYPERCALL(n, f)                                                 \
+        case __HYPERVISOR_ ## n: {                                      \
+            hvm_hypercall_t *hh = (hvm_hypercall_t *)f;                 \
+            regs->rax = hh(regs->rdi, regs->rsi, regs->rdx, regs->r10,  \
+                           regs->r8, regs->r9);                         \
+            break;                                                      \
+        }
+        switch (eax) {
+            HYPERCALL(memory_op, hvm_memory_op);
+            HYPERCALL(xen_version, do_xen_version);
+            HYPERCALL(hvm_op, do_hvm_hvm_op);
+            HYPERCALL(sched_op, do_hvm_sched_op);
+            HYPERCALL(v4v_op, do_v4v_op);
+        default:
+            regs->eax = -ENOSYS;
+            return HVM_HCALL_completed;
+        }
+#undef HYPERCALL
+
         curr->arch.hvm_vcpu.hcall_64bit = 0;
     }
     else
@@ -4167,13 +4186,26 @@ int hvm_do_hypercall(struct cpu_user_regs *regs)
                     (uint32_t)regs->edx, (uint32_t)regs->esi,
                     (uint32_t)regs->edi, (uint32_t)regs->ebp);
 
-        regs->eax = hvm_hypercall32_table[eax]((uint32_t)regs->ebx,
-                                               (uint32_t)regs->ecx,
-                                               (uint32_t)regs->edx,
-                                               (uint32_t)regs->esi,
-                                               (uint32_t)regs->edi,
-                                               (uint32_t)regs->ebp);
+#define HYPERCALL(n, f)                                                 \
+        case __HYPERVISOR_ ## n: {                                      \
+            hvm_hypercall_t *hh = (hvm_hypercall_t *)f;                 \
+            regs->eax = hh((uint32_t)regs->ebx, (uint32_t)regs->ecx,    \
+                           (uint32_t)regs->edx, (uint32_t)regs->esi,    \
+                           (uint32_t)regs->edi, (uint32_t)regs->ebp);   \
+            break;                                                      \
+        }
+        switch (eax) {
+            HYPERCALL(memory_op, hvm_memory_op);
+            HYPERCALL(xen_version, do_xen_version);
+            HYPERCALL(hvm_op, do_hvm_hvm_op);
+            HYPERCALL(sched_op, do_hvm_sched_op);
+            HYPERCALL(v4v_op, do_v4v_op);
+        default:
+            regs->eax = -ENOSYS;
+            return HVM_HCALL_completed;
+        }
     }
+#undef HYPERCALL
 
     HVM_DBG_LOG(DBG_LEVEL_HCALL, "hcall%u -> %lx",
                 eax, (unsigned long)regs->eax);
@@ -4736,6 +4768,9 @@ hvmop_map_io_range_to_ioreq_server(
     struct domain *d;
     int rc;
 
+    if (a->s > a->e)
+        return -EINVAL;
+
     rc = rcu_lock_remote_target_domain_by_id(a->domid, &d);
     if (rc != 0)
         return rc;
@@ -4849,6 +4884,7 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE(void) arg)
 
         if ( a.index >= HVM_NR_PARAMS )
             return -EINVAL;
+        a.index = array_index_nospec(a.index, HVM_NR_PARAMS);
 
         rc = rcu_lock_target_domain_by_id(a.domid, &d);
         if ( rc != 0 )
@@ -5337,6 +5373,8 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE(void) arg)
         if (a.hvmmem_type != HVMMEM_ram_immutable)
             goto param_fail4;
 
+        a.hvmmem_type = array_index_nospec(a.hvmmem_type, (unsigned long)ARRAY_SIZE(memtype));
+
         for ( pfn = a.first_pfn; pfn < a.first_pfn + a.nr; pfn++ )
         {
             p2m_type_t t;
@@ -5525,7 +5563,10 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE(void) arg)
             goto param_fail8;
 
         rc = -ENOENT;
-        if ( tr.vcpuid >= d->max_vcpus || (v = d->vcpu[tr.vcpuid]) == NULL )
+        if (tr.vcpuid >= d->max_vcpus)
+            goto param_fail8;
+        tr.vcpuid = array_index_nospec(tr.vcpuid, d->max_vcpus);
+        if ((v = d->vcpu[tr.vcpuid]) == NULL)
             goto param_fail8;
         
         if ( v->arch.hvm_vcpu.inject_trap != -1 )
@@ -5622,6 +5663,8 @@ long do_hvm_op(unsigned long op, XEN_GUEST_HANDLE(void) arg)
 
         if (xl.len >= HVMOP_xenlog_msgmax)
             return -EFAULT;
+
+        xl.len = array_index_nospec(xl.len, HVMOP_xenlog_msgmax);
 
         for (i = 0; i < xl.len; i++) {
             c = xl.msg[i];

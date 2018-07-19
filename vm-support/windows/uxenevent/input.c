@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <windowsx.h>
 #include <tchar.h>
+#include <wchar.h>
 
 #define ERR_WINDOWS
 #include <err.h>

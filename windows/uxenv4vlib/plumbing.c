@@ -58,6 +58,11 @@ V4V_DLL_EXPORT void uxen_v4vlib_init_driver(PDRIVER_OBJECT pdo)
     gh_create_device(driver_object);
 }
 
+V4V_DLL_DECL void uxen_v4vlib_set_thread_priority(LONG priority)
+{
+    gh_set_thread_priority(priority);
+}
+
 uintptr_t v4v_call_page_notify(v4v_pfn_t *pfn, uint32_t npfn, int map)
 {
     return page_notify_func ? page_notify_func(pfn, npfn, map) : 0;

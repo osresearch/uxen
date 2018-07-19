@@ -33,9 +33,20 @@
 #define __V4VAPI_H__
 
 #if !defined(XENV4V_DRIVER)
+#if defined(_MSC_VER)
+#if defined(_M_X64)
+#define __x86_64__
+#elif defined(_M_IX86)
+#define __i386__
+#endif
+#include <stdint.h>
+#include <Windows.h>
+#include <WinIoCtl.h>
+#endif
 #define V4V_EXCLUDE_INTERNAL
 #include <xen/v4v.h>
 #endif
+
 
 /* This structure is used for datagram reads and writes. When sending a
  * datagram, extra space must be reserved at the front of the buffer to
@@ -333,7 +344,7 @@ _v4v_open(v4v_channel_t *channel, ULONG ring_size, ULONG flags, OVERLAPPED *ov)
 
         rc = DeviceIoControl(hd, V4V_IOCTL_INITIALIZE, &init,
                              sizeof(v4v_init_values_t), NULL, 0, &br,
-                             v4v_is_overlapped(channel) ? (ov ? : &o) : NULL);
+                             v4v_is_overlapped(channel) ? (ov ? ov : &o) : NULL);
         if (v4v_is_overlapped(channel)) {
             if ((GetLastError() != ERROR_SUCCESS) &&
                 (GetLastError() != ERROR_IO_PENDING))
@@ -407,7 +418,7 @@ _v4v_bind(v4v_channel_t *channel, v4v_bind_values_t *bind, OVERLAPPED *ov)
     rc = DeviceIoControl(channel->v4v_handle, V4V_IOCTL_BIND,
                          bind, sizeof(v4v_bind_values_t),
                          bind, sizeof(v4v_bind_values_t), &br,
-                         v4v_is_overlapped(channel) ? (ov ? : &o) : NULL);
+                         v4v_is_overlapped(channel) ? (ov ? ov : &o) : NULL);
     if (v4v_is_overlapped(channel)) {
         if ((GetLastError() != ERROR_SUCCESS) &&
             (GetLastError() != ERROR_IO_PENDING))
@@ -474,7 +485,7 @@ _v4v_get_info(v4v_channel_t *channel, v4v_getinfo_type_t type,
     rc = DeviceIoControl(channel->v4v_handle, V4V_IOCTL_GETINFO,
                          &info, sizeof(v4v_getinfo_values_t),
                          infoOut, sizeof(v4v_getinfo_values_t), &br,
-                         v4v_is_overlapped(channel) ? (ov ? : &o) : NULL);
+                         v4v_is_overlapped(channel) ? (ov ? ov : &o) : NULL);
     if (v4v_is_overlapped(channel)) {
         if ((GetLastError() != ERROR_SUCCESS) &&
             (GetLastError() != ERROR_IO_PENDING))
@@ -535,7 +546,7 @@ _v4v_map(v4v_channel_t *channel, v4v_mapring_values_t *ring, OVERLAPPED *ov)
     rc = DeviceIoControl(channel->v4v_handle, V4V_IOCTL_MAPRING,
                          &mr, sizeof(v4v_mapring_values_t),
                          ring, sizeof(v4v_mapring_values_t), &br,
-                         v4v_is_overlapped(channel) ? (ov ? : &o) : NULL);
+                         v4v_is_overlapped(channel) ? (ov ? ov : &o) : NULL);
     if (v4v_is_overlapped(channel)) {
         if ((GetLastError() != ERROR_SUCCESS) &&
             (GetLastError() != ERROR_IO_PENDING))
@@ -580,7 +591,7 @@ _v4v_dump_ring(v4v_channel_t *channel, OVERLAPPED *ov)
 
     rc = DeviceIoControl(channel->v4v_handle, V4V_IOCTL_DUMPRING,
                          NULL, 0, NULL, 0, &br,
-                         v4v_is_overlapped(channel) ? (ov ? : &o) : NULL);
+                         v4v_is_overlapped(channel) ? (ov ? ov : &o) : NULL);
     if (v4v_is_overlapped(channel)) {
         if ((GetLastError() != ERROR_SUCCESS) &&
             (GetLastError() != ERROR_IO_PENDING))
@@ -622,7 +633,7 @@ _v4v_notify(v4v_channel_t *channel, OVERLAPPED *ov)
 
     rc = DeviceIoControl(channel->v4v_handle, V4V_IOCTL_NOTIFY,
                          NULL, 0, NULL, 0, &br,
-                         v4v_is_overlapped(channel) ? (ov ? : &o) : NULL);
+                         v4v_is_overlapped(channel) ? (ov ? ov : &o) : NULL);
     if (v4v_is_overlapped(channel)) {
         if ((GetLastError() != ERROR_SUCCESS) &&
             (GetLastError() != ERROR_IO_PENDING))
@@ -665,7 +676,7 @@ _v4v_poke(v4v_channel_t *channel, v4v_addr_t *dst, OVERLAPPED *ov)
 
     rc = DeviceIoControl(channel->v4v_handle, V4V_IOCTL_POKE,
                          &poke, sizeof(v4v_poke_values_t), NULL, 0, &br,
-                         v4v_is_overlapped(channel) ? (ov ? : &o) : NULL);
+                         v4v_is_overlapped(channel) ? (ov ? ov : &o) : NULL);
     if (v4v_is_overlapped(channel)) {
         if ((GetLastError() != ERROR_SUCCESS) &&
             (GetLastError() != ERROR_IO_PENDING))
@@ -730,7 +741,7 @@ _v4v_debug(v4v_channel_t *channel, OVERLAPPED *ov)
 
     rc = DeviceIoControl(channel->v4v_handle, V4V_IOCTL_DEBUG,
                          NULL, 0, NULL, 0, &br,
-                         v4v_is_overlapped(channel) ? (ov ? : &o) : NULL);
+                         v4v_is_overlapped(channel) ? (ov ? ov : &o) : NULL);
     if (v4v_is_overlapped(channel)) {
         if ((GetLastError() != ERROR_SUCCESS) &&
             (GetLastError() != ERROR_IO_PENDING))

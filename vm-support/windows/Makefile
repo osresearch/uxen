@@ -25,6 +25,7 @@ SUBDIRS += uxennullnet
 SUBDIRS += uxensf
 SUBDIRS += uxenhid
 SUBDIRS += uxenpatcher
+SUBDIRS += uxenh264
 SUBDIRS += installer
 
 TARGETS = all dist

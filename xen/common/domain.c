@@ -193,7 +193,9 @@ struct vcpu *alloc_vcpu(
         v->runstate.state_entry_time = NOW();
         set_bit(_VPF_down, &v->pause_flags);
         v->vcpu_info = ((vcpu_id < XEN_LEGACY_MAX_VCPUS)
-                        ? (vcpu_info_t *)&shared_info(d, vcpu_info[vcpu_id])
+                        ? (vcpu_info_t *)&shared_info(
+                            d, vcpu_info[array_index_nospec(
+                                    vcpu_id, XEN_LEGACY_MAX_VCPUS)])
                         : &dummy_vcpu_info);
 #ifndef __UXEN__
         init_waitqueue_vcpu(v);
@@ -607,7 +609,8 @@ domain_set_max_vcpus(struct domain *d, unsigned int max)
 
     /* We cannot reduce maximum VCPUs. */
     ret = -EINVAL;
-    if ( (max < d->max_vcpus) && (d->vcpu[max] != NULL) )
+    if ((max < d->max_vcpus) &&
+        (d->vcpu[array_index_nospec(max, d->max_vcpus)] != NULL))
         goto out;
 
     /*
@@ -688,6 +691,7 @@ struct domain *get_domain_by_id(domid_t dom)
 
     rcu_read_lock(&domlist_read_lock);
 
+    dom = array_index_nospec(dom, DOMID_FIRST_RESERVED);
     d = domain_array[dom];
     if (d && unlikely(!get_domain(d)))
         d = NULL;
@@ -707,6 +711,7 @@ struct domain *rcu_lock_domain_by_id(domid_t dom)
 
     rcu_read_lock(&domlist_read_lock);
 
+    dom = array_index_nospec(dom, DOMID_FIRST_RESERVED);
     d = domain_array[dom];
     if (d)
         rcu_lock_domain(d);
@@ -802,6 +807,9 @@ int domain_kill(struct domain *d)
     struct domain *clone_of;
     int rc = 0;
 
+    printk("%s: dom:%p, curr_dom:%p, is_dying:%d\n",
+           __FUNCTION__, d, current->domain, d->is_dying);
+
     if ( d == current->domain )
         return -EINVAL;
 
@@ -829,6 +837,8 @@ int domain_kill(struct domain *d)
                 /* break links between uxen level template domain and
                  * driver level structures, which will be freed on
                  * return from here */
+                printk("%s:%d: sched_destroy_domain() for vm%u\n",
+                       __FUNCTION__, __LINE__, d->domain_id);
                 sched_destroy_domain(d);
                 rc = 0;
             }
@@ -837,19 +847,35 @@ int domain_kill(struct domain *d)
         /* release ref held on template domain, now that our memory
          * has been torn down */
         clone_of = d->clone_of;
-        if (clone_of)
+        if (clone_of) {
+            printk("%s:%d: vm%u before put_domain for template vm%u: "
+                "refcnt=%d tot_pages=%d xenheap_pages=%d vframes=%d\n",
+                __FUNCTION__, __LINE__, d->domain_id, d->clone_of->domain_id,
+                atomic_read(&d->clone_of->refcnt),
+                d->clone_of->tot_pages, d->clone_of->xenheap_pages, d->clone_of->vframes);
             put_domain(clone_of);
+        }
         d->is_dying = DOMDYING_dead;
 #ifndef __UXEN__
         send_guest_global_virq(dom0, VIRQ_DOM_EXC);
 #else   /* __UXEN__ */
         hostsched_notify_exception(d);
 #endif  /* __UXEN__ */
+        printk("%s:%d: sched_destroy_domain() for vm%u\n",
+               __FUNCTION__, __LINE__, d->domain_id);
         sched_destroy_domain(d);
+        printk("%s:%d: vm%u before put_domain: refcnt=%d tot_pages=%d xenheap_pages=%d vframes=%d\n",
+            __FUNCTION__, __LINE__, d->domain_id,
+            atomic_read(&d->refcnt), d->tot_pages, d->xenheap_pages, d->vframes);
         put_domain(d);
         if (clone_of && clone_of->is_dying &&
             domain_relinquish_resources(clone_of) == 0) {
             clone_of->is_dying = DOMDYING_dead;
+            printk("%s:%d: vm%u before put_domain for template vm%u: "
+                "refcnt=%d tot_pages=%d xenheap_pages=%d vframes=%d\n",
+                __FUNCTION__, __LINE__, d->domain_id, d->clone_of->domain_id,
+                atomic_read(&d->clone_of->refcnt),
+                d->clone_of->tot_pages, d->clone_of->xenheap_pages, d->clone_of->vframes);
             put_domain(clone_of);
         }
         /* fallthrough */
@@ -1059,6 +1085,8 @@ static void complete_domain_destroy(struct rcu_head *head)
 
     cpupool_rm_domain(d);
 
+    printk("%s:%d: sched_destroy_domain() for vm%u\n",
+           __FUNCTION__, __LINE__, d->domain_id);
     sched_destroy_domain(d);
 
 #ifndef __UXEN__
@@ -1105,6 +1133,8 @@ void domain_destroy(struct domain *d)
 
     BUG_ON(!d->is_dying);
 
+    printk("domain_destroy for vm%u\n", d->domain_id);
+
     /* May be already destroyed, or get_domain() can race us. */
     _atomic_set(old, 0);
     _atomic_set(new, DOMAIN_DESTROYED);
@@ -1127,6 +1157,7 @@ void domain_destroy(struct domain *d)
 #endif  /* __UXEN__ */
     spin_unlock(&domlist_update_lock);
 
+    printk("schedule rcu complete_domain_destroy for vm%u\n", d->domain_id);
     /* Schedule RCU asynchronous completion of domain destroy. */
     call_rcu(&d->rcu, complete_domain_destroy);
 }
@@ -1318,7 +1349,10 @@ long do_vcpu_op(int cmd, int vcpuid, XEN_GUEST_HANDLE(void) arg)
     if ( (vcpuid < 0) || (vcpuid >= MAX_VIRT_CPUS) )
         return -EINVAL;
 
-    if ( vcpuid >= d->max_vcpus || (v = d->vcpu[vcpuid]) == NULL )
+    if (vcpuid >= d->max_vcpus)
+        return -ENOENT;
+    vcpuid = array_index_nospec(vcpuid, d->max_vcpus);
+    if ((v = d->vcpu[vcpuid]) == NULL)
         return -ENOENT;
 
     switch ( cmd )

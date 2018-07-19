@@ -17,9 +17,9 @@ $(OSX_CONFIG_NOT)CONFIG_VBOXDRV ?= no_
 #CONFIG_NICKEL_THREADED ?= no_
 
 DM_CONFIG_DUMP_BLOCK_STAT ?= no_
-DM_CONFIG_DUMP_CPU_STAT ?= no_
-DM_CONFIG_DUMP_MEMORY_STAT ?= no_
-DM_CONFIG_DUMP_SWAP_STAT ?= no_
+DM_CONFIG_DUMP_CPU_STAT ?= yes
+DM_CONFIG_DUMP_MEMORY_STAT ?= yes
+DM_CONFIG_DUMP_SWAP_STAT ?= yes
 
 COMMONINCLUDEDIR = $(TOPDIR)/common/include
 LIBELFDIR = $(TOPDIR)/xen/common/libelf
@@ -214,6 +214,9 @@ DM_SRCS += vram.c
 vram.o: CPPFLAGS += $(LIBXC_CPPFLAGS)
 vram.o: CPPFLAGS += $(LIBUXENCTL_CPPFLAGS)
 vram.o: CPPFLAGS += $(LZ4_CPPFLAGS)
+$(WINDOWS)DM_SRCS += uxenh264.c
+uxenh264.o: CPPFLAGS += $(LIBXC_CPPFLAGS)
+uxenh264.o: CPPFLAGS += $(LIBUXENCTL_CPPFLAGS)
 
 DM_SRCS += hw/applesmc.c
 DM_SRCS += hw/dmpdev.c
@@ -351,6 +354,8 @@ shared-folders/filecrypt_helper.o: $(LIBFILECRYPT_DEPS)
 VBOXDRV_SRCS += shared-folders/sf-server.c
 VBOXDRV_SRCS += shared-folders/mappings.c
 VBOXDRV_SRCS += shared-folders/mappings-opts.c
+VBOXDRV_SRCS += shared-folders/redir.c
+VBOXDRV_SRCS += shared-folders/util.c
 VBOXDRV_SRCS += shared-folders/sf-service.c
 VBOXDRV_SRCS += shared-folders/shflhandle.c
 VBOXDRV_SRCS += shared-folders/quota.c
@@ -454,7 +459,7 @@ $(DM_OBJS): $(YAJL_DEPS) .deps/.exists
 
 $(DEBUG_ONLY)CONFIG_H_CHECK = check-config-include.o
 
-uxendm$(EXE_SUFFIX): $(LIBVHD_DEPS) $(LIBUXENCTL_DEPS) $(LIBXC_DEPS)
+uxendm$(EXE_SUFFIX): $(LIBVHD_DEPS) $(LIBUXENCTL_DEPS) $(LIBXC_DEPS) $(LIBUXENH264_DEPS)
 uxendm$(EXE_SUFFIX): $(DM_OBJS) $(CONFIG_H_CHECK)
 	$(_W)echo Linking - $@
 	$(_V)$(call link,$@,$(DM_OBJS) $(CONFIG_H_CHECK) $(LDLIBS))

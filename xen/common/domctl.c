@@ -338,8 +338,11 @@ long do_domctl(XEN_GUEST_HANDLE(xen_domctl_t) u_domctl)
             goto svc_out;
 
         ret = -EINVAL;
-        if ( (d == current->domain) || /* no domain_pause() */
-             (vcpu >= d->max_vcpus) || ((v = d->vcpu[vcpu]) == NULL) )
+        if ((d == current->domain) || /* no domain_pause() */
+            (vcpu >= d->max_vcpus))
+            goto svc_out;
+        vcpu = array_index_nospec(vcpu, d->max_vcpus);
+        if ((v = d->vcpu[vcpu]) == NULL)
             goto svc_out;
 
         if ( guest_handle_is_null(op->u.vcpucontext.ctxt) )
@@ -491,10 +494,14 @@ long do_domctl(XEN_GUEST_HANDLE(xen_domctl_t) u_domctl)
     case XEN_DOMCTL_destroydomain:
     {
         struct domain *d = rcu_lock_domain_by_id(op->domain);
+        int tret;
+        printk("%s: d:%p, opdom:%u\n", __FUNCTION__, d, op->domain);
         ret = -ESRCH;
         if ( d != NULL )
         {
-            ret = xsm_destroydomain(d) ? : domain_kill(d);
+            tret = xsm_destroydomain(d);
+            printk("%s: d:%p, %d\n", __FUNCTION__, d, tret);
+            ret = tret ? : domain_kill(d);
             rcu_unlock_domain(d);
         }
     }
@@ -520,6 +527,8 @@ long do_domctl(XEN_GUEST_HANDLE(xen_domctl_t) u_domctl)
         if ( op->u.vcpuaffinity.vcpu >= d->max_vcpus )
             goto vcpuaffinity_out;
 
+        op->u.vcpuaffinity.vcpu =
+            array_index_nospec(op->u.vcpuaffinity.vcpu, d->max_vcpus);
         ret = -ESRCH;
         if ( (v = d->vcpu[op->u.vcpuaffinity.vcpu]) == NULL )
             goto vcpuaffinity_out;
@@ -620,6 +629,8 @@ long do_domctl(XEN_GUEST_HANDLE(xen_domctl_t) u_domctl)
         if ( op->u.vcpucontext.vcpu >= d->max_vcpus )
             goto getvcpucontext_out;
 
+        op->u.vcpucontext.vcpu =
+            array_index_nospec(op->u.vcpucontext.vcpu, d->max_vcpus);
         ret = -ESRCH;
         if ( (v = d->vcpu[op->u.vcpucontext.vcpu]) == NULL )
             goto getvcpucontext_out;
@@ -682,6 +693,8 @@ long do_domctl(XEN_GUEST_HANDLE(xen_domctl_t) u_domctl)
         if ( op->u.getvcpuinfo.vcpu >= d->max_vcpus )
             goto getvcpuinfo_out;
 
+        op->u.getvcpuinfo.vcpu =
+            array_index_nospec(op->u.getvcpuinfo.vcpu, d->max_vcpus);
         ret = -ESRCH;
         if ( (v = d->vcpu[op->u.getvcpuinfo.vcpu]) == NULL )
             goto getvcpuinfo_out;

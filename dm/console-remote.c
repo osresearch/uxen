@@ -23,6 +23,8 @@
 
 #include "ipc.h"
 
+#include "hw/uxdisp_hw.h"
+
 /* uxenconsolelib */
 #include "uxenconsolelib.h"
 #include "console-rpc.h"
@@ -227,6 +229,16 @@ handle_message(struct uxenconsole_msg_header *hdr)
             void hotplug_touch_devices(int plug);
 
             hotplug_touch_devices(msg->plug);
+#endif
+        }
+        break;
+    case UXENCONSOLE_MSG_TYPE_SET_SHARED_SURFACE:
+        {
+#if !defined(__APPLE__)
+            struct uxenconsole_msg_set_shared_surface *msg = (void *)hdr;
+            struct ipc_client *c;
+            TAILQ_FOREACH(c, &console_svc.clients, link)
+                ipc_client_send(c, msg, sizeof(*msg));
 #endif
         }
         break;
@@ -586,8 +598,10 @@ gui_cursor_shape(struct gui_state *state,
 
 
     /* Sanity checks */
-    if (w > 128 || w < 0 || h > 128 || h < 0)
+    if (w > UXDISP_CURSOR_WIDTH_MAX || w < 0 || h > UXDISP_CURSOR_HEIGHT_MAX || h < 0) {
+        debug_printf("cursor size check failed: (%d > %d) or (%d > %d)\n", w, UXDISP_CURSOR_WIDTH_MAX, h, UXDISP_CURSOR_HEIGHT_MAX);
         return;
+    }
 
     if (w != 0 && h != 0) {
         size_t colorlen = 0;
@@ -690,8 +704,8 @@ gui_create(struct gui_state *state, struct display_state *ds)
     s->state.height = 480;
 
     s->ds = ds;
-    s->cursor_mask_offset = 128 * 128 * 4;
-    s->cursor_len = s->cursor_mask_offset + 128 * 128 * 2 / 8;
+    s->cursor_mask_offset = UXDISP_REG_CURSOR_DATA;
+    s->cursor_len = s->cursor_mask_offset + UXDISP_CURSOR_WIDTH_MAX * UXDISP_CURSOR_HEIGHT_MAX * 2 / 8;
     s->cursor_view = create_shm_segment(s->cursor_len, &s->cursor_handle);
     if (!s->cursor_view) {
         return -1;

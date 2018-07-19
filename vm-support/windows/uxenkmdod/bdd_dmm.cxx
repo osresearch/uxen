@@ -493,6 +493,13 @@ NTSTATUS BASIC_DISPLAY_DRIVER::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN* CONST
     CONST D3DKMDT_VIDPN_PRESENT_PATH*        pVidPnPresentPath = NULL;
     CONST D3DKMDT_VIDPN_SOURCE_MODE*         pPinnedVidPnSourceModeInfo = NULL;
 
+    Status = KeWaitForSingleObject(&m_PresentLock, Executive, KernelMode, FALSE, NULL);
+    if (Status != STATUS_SUCCESS) {
+        uxen_err("wait interrupted: %x\n", Status);
+        /* continue anyway */
+        Status = STATUS_SUCCESS;
+    }
+
     // Check this CommitVidPn is for the mode change notification when monitor is in power off state.
     if (pCommitVidPn->Flags.PathPoweredOff)
     {
@@ -556,7 +563,7 @@ NTSTATUS BASIC_DISPLAY_DRIVER::CommitVidPn(_In_ CONST DXGKARG_COMMITVIDPN* CONST
         !m_CurrentModes[pCommitVidPn->AffectedVidPnSourceId].Flags.DoNotMapOrUnmap)
     {
         Status = UnmapFrameBuffer(m_CurrentModes[pCommitVidPn->AffectedVidPnSourceId].FrameBuffer.Ptr,
-                                  m_CurrentModes[pCommitVidPn->AffectedVidPnSourceId].DispInfo.Pitch * m_CurrentModes[pCommitVidPn->AffectedVidPnSourceId].DispInfo.Height);
+          GetFBMapLength(pCommitVidPn->AffectedVidPnSourceId));
         m_CurrentModes[pCommitVidPn->AffectedVidPnSourceId].FrameBuffer.Ptr = NULL;
         m_CurrentModes[pCommitVidPn->AffectedVidPnSourceId].Flags.FrameBufferIsActive = FALSE;
 
@@ -669,6 +676,8 @@ CommitVidPnExit:
         NT_ASSERT(NT_SUCCESS(TempStatus));
     }
 
+    KeReleaseSemaphore(&m_PresentLock, 0, 1, FALSE);
+
     return Status;
 }
 
@@ -697,8 +706,8 @@ NTSTATUS BASIC_DISPLAY_DRIVER::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_M
 {
     CURRENT_BDD_MODE* pCurrentBddMode = &m_CurrentModes[pPath->VidPnSourceId];
     VIDEO_MODE_INFORMATION mode;
-
     NTSTATUS Status = STATUS_SUCCESS;
+
     pCurrentBddMode->Scaling = pPath->ContentTransformation.Scaling;
     pCurrentBddMode->SrcModeWidth = pSourceMode->Format.Graphics.PrimSurfSize.cx;
     pCurrentBddMode->SrcModeHeight = pSourceMode->Format.Graphics.PrimSurfSize.cy;
@@ -721,15 +730,18 @@ NTSTATUS BASIC_DISPLAY_DRIVER::SetSourceModeAndPath(CONST D3DKMDT_VIDPN_SOURCE_M
         mode.ScreenStride += (mode.VisScreenWidth & 1) * 4;
     }
 
-    hw_set_mode(&m_HwResources, &mode);
+    hw_set_mode(&m_HwResources, 0, GetCRTCOffset(0, &mode), GetCRTCBuffers(0), &mode);
+    hw_set_mode(&m_HwResources, 1, GetCRTCOffset(1, &mode), GetCRTCBuffers(1), &mode);
+
+    m_HwMode = mode;
 
     if (!pCurrentBddMode->Flags.DoNotMapOrUnmap)
     {
         // Map the new frame buffer
         ASSERT(pCurrentBddMode->FrameBuffer.Ptr == NULL);
         Status = MapFrameBuffer(pCurrentBddMode->DispInfo.PhysicAddress,
-                                pCurrentBddMode->DispInfo.Pitch * pCurrentBddMode->DispInfo.Height,
-                                &(pCurrentBddMode->FrameBuffer.Ptr));
+          GetFBMapLength(pPath->VidPnSourceId),
+          &(pCurrentBddMode->FrameBuffer.Ptr));
     }
 
     if (NT_SUCCESS(Status))
@@ -901,8 +913,10 @@ NTSTATUS BASIC_DISPLAY_DRIVER::UnmapScratchVram(void *data)
 NTSTATUS BASIC_DISPLAY_DRIVER::SetVirtMode(UXENDISPCustomMode *pNewMode)
 {
     VIDEO_MODE_INFORMATION mode;
-
-    KeWaitForSingleObject(&m_PresentLock, Executive, KernelMode, FALSE, NULL);
+    NTSTATUS Status;
+    Status = KeWaitForSingleObject(&m_PresentLock, Executive, KernelMode, FALSE, NULL);
+    if (Status != STATUS_SUCCESS)
+      uxen_err("wait interrupted: %x\n", Status);
 
     mode.VisScreenWidth = pNewMode->width;
     mode.VisScreenHeight = pNewMode->height;
@@ -920,9 +934,10 @@ NTSTATUS BASIC_DISPLAY_DRIVER::SetVirtMode(UXENDISPCustomMode *pNewMode)
                  (int)mode.VisScreenWidth, (int)mode.VisScreenHeight,
                  (int)mode.ScreenStride);
     }
-    hw_set_mode(&m_HwResources, &mode);
-
+    hw_set_mode(&m_HwResources, 0, GetCRTCOffset(0, &mode), GetCRTCBuffers(0), &mode);
+    hw_set_mode(&m_HwResources, 1, GetCRTCOffset(1, &mode), GetCRTCBuffers(1), &mode);
     m_VirtMode = *pNewMode;
+    m_HwMode = mode;
 
     KeReleaseSemaphore(&m_PresentLock, 0, 1, FALSE);
 

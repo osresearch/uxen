@@ -32,6 +32,7 @@
 #include "vm-save.h"
 #include "uuidgen.h"
 #include "uxen.h"
+#include "uxenh264.h"
 #include "hw/pv_vblank.h"
 
 #if defined(CONFIG_NICKEL)
@@ -83,11 +84,12 @@ uint64_t vm_zero_page = 1;
 uint64_t vm_zero_page_setup = 1;
 uint64_t vm_apic = 1;
 uint64_t vm_hidden_mem = 1;
+uint64_t vm_ignore_storage_space_fix = 0;
 uint64_t vm_use_v4v_net = 0;
 uint64_t vm_use_v4v_disk = 0;
 uint64_t vm_v4v_storage = 1;
 uint64_t vm_v4v_disable_ahci_clones = 0;
-uint64_t vm_vram_dirty_tracking = 1;
+uint64_t vm_vram_dirty_tracking = 0;
 uint8_t v4v_idtoken[16] = { };
 uint8_t v4v_idtoken_is_vm_uuid = 1;
 const char *vmsavefile_on_crash = NULL;
@@ -114,6 +116,7 @@ const char *console_type = "win32";
 const char *console_type = "osx";
 #endif
 static char *control_path = NULL;
+uint64_t h264_offload = 0;
 
 const char *clipboard_formats_blacklist_host2vm = NULL;
 const char *clipboard_formats_whitelist_host2vm = NULL;
@@ -383,6 +386,9 @@ main(int argc, char **argv)
     if (!vm_start_paused)
         vm_unpause();
 
+    if (h264_offload)
+        uxenh264_start();
+
     plog("ready");
     ret = asprintf(&vm_window_str, "0x%"PRIx64, (uint64_t)(uintptr_t)vm_window);
     if (ret <= 0)
@@ -432,6 +438,9 @@ main(int argc, char **argv)
          * save */
         vm_set_run_mode(vm_get_run_mode());
     }
+
+    if (h264_offload)
+        uxenh264_stop();
 
 #if defined(CONFIG_NICKEL)
     ni_exit();

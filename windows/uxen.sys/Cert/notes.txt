@@ -1,0 +1,12 @@
+uxen-gen-dev-cert.bat:
+Creates certificate in user's "My" (=Personal) store.  Use certmgr to export the certificate as dev-uxen.pfx.
+Also creates dev-uxen.cer for use on target machine.
+
+dev-uxen.pfx:
+Install using GUI on dev machine.
+
+dev-uxen.cer:
+Install using GUI on target machine, or using uxen-install-dev-cert.bat.
+
+Enable "testsigning" in target machines bcd.
+

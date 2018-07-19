@@ -5,7 +5,7 @@
 
 
 #define AX_CPUID_EFISTUB      0x35271645
-// LEGACY - 
+// LEGACY -
 
 #define AX_CPUID_LEVEL        0x351f9005
 // DEPRECIATED - GET CURRENT LEVEL
@@ -27,13 +27,13 @@
 
 #define AX_CPUID_LOG          0x3509cfe1
 // READ FROM LOG SPACE
-// on entry RCX contains offset into log space. 
+// on entry RCX contains offset into log space.
 // on exit RAX, RBX, RCX, RDX contain upto 32 bytes of log data
 
 #define AX_CPUID_LOG_SIZE     0x3575d04f
 // READ LOG SIZE
 // on exit RBX contains the size of log space
-// RCX the log read offset 
+// RCX the log read offset
 // RDX the log write offset
 
 #define AX_CPUID_PRESENCE     0x35f9e064
@@ -67,7 +67,7 @@
 
 #define AX_CPUID_GA_READ      0x35452ce1
 // Reads upto 16 bytes of GA data into RBX, RDX
-// on entry RCX is offset. 
+// on entry RCX is offset.
 
 #define AX_CPUID_AX_FEATURES  0x351f9505
 // reads 32 AX feature bits from [RCX<<5 + 31,RCX <<5] into RDX
@@ -88,12 +88,12 @@
 #define AX_CPUID_PV_EPT_WRITE_INVEPT_ALL        0x20
 // Update EPT entry. The guest can use this interface to avoid
 // having to issue invept when it does certain modifications of L23
-// EPT tables. After modifying the table the guest should call this 
-// function.  
+// EPT tables. After modifying the table the guest should call this
+// function.
 //
 // on Entry
-// RBX = L3 EPT_POINTER 
-// RCX = L3 GPA | flags | level 
+// RBX = L3 EPT_POINTER
+// RCX = L3 GPA | flags | level
 // RDX = EPTE that was written
 //
 // The valid flag must always be set
@@ -131,7 +131,7 @@
 // VMCLEAR on other CPU
 // on entry RCX is the PA of the VMCS in question
 // if the VMCS is not loaded on any CPU, AX will return 0 in RAX
-// if it is in use AX will issue an IPI to cause it to be unloaded 
+// if it is in use AX will issue an IPI to cause it to be unloaded
 // and return non-zero in RAX
 // The guest should then pause and attempt the operation again until
 // zero is returned or scheduling happens.
@@ -142,6 +142,47 @@
 // the vmcs had been loaded. Guests should use locks &c. to avoid misery.
 
 //  printf 0x35%02x%02x%02x\\n $[ $RANDOM % 256 ] $[ $RANDOM % 256 ] $[ $RANDOM % 256 ]
+//
+//
+
+#define AX_CPUID_CRASH_GUEST      0x35533fa3
+// CRASH_GUEST
+// on the next available L2 entry, inject an NMI into this cpu. Only in non-production builds.
+
+
+#define AX_CPUID_PV_VMACCESS		0x35327f4e
+// PV_VMACCESS
+// Currently only supported for L2
+// CPL 0 is required
+// on entry RBX is zero to disable PV_VMACCESS, or one to enable. 
+// The effect is immediate and applies to all CPUs.  
+// RCX contains NULL or a pointer to PAGE of memory that starts and ends 
+// wih AX_PV_VMACCESS_SIG1, AX_PV_VMACCESS_SIG2 and will be replaced with 
+// the pv_vmread code.
+// RDX contains NULL or a pointer to a similar PAGE of memory, and will
+// be replaced with the pv_vmwrite code
+// On exit RAX contains one if AX is configured to permit PV_VMACCESS
+// RBX contains the context pointer for _this_ cpu or NULL
+// RCX is unchanged or NULL
+// RDX is unchanged or NULL
+//
+// You'd typically call it once to patch and then n or n-1 times
+// to get the CTX pointers for all CPUs
+// the vmread and vmwrite functions fall back if the ctx pointer
+// is NULL.
+//
+#define AX_PV_VMACCESS_SIG_1    0xa5420b0f
+#define AX_PV_VMACCESS_SIG_2    0x6212bf65
+
+
+
+// FIXME: document these
+#define AX_CPUID_INVEPT_BASE			0x359ff327
+#define AX_CPUID_SVM_VMRUN			0x35404052
+#define AX_CPUID_VMCB_CHECK_MY			0x355ea363
+#define AX_CPUID_VMCB_CHECK_INTERCEPT_INVLPG	(1UL << 0)
+#define AX_VMCB_OFFSET_V1			0x800
+#define AX_SVM_FLAGS_VMSAVE_ROOT		0x1
 
 
 #define AX_FEATURES_AX_L1_VMX      (1ULL << 0)
@@ -149,8 +190,10 @@
 #define AX_FEATURES_AX_SHADOW_EPT  (1ULL << 2)
 #define AX_FEATURES_AX_L2_VMCLEAR  (1ULL << 3)
 #define AX_FEATURES_AX_L2_FLUSHTLB (1ULL << 4)
+#define AX_FEATURES_AX_PV_VMCS     (1ULL << 5)
 
 #define AX_FEATURES_LN_VMCS_X_V1    (1ULL << 0)
+#define AX_FEATURES_LN_VMCB_X_V1    (1ULL << 0)
 #define AX_FEATURES_LN_NO_XCR0      (1ULL << 1)
 #define AX_FEATURES_LN_NO_RESTORE_DT_LIMITS  (1ULL << 2)
 #define AX_FEATURES_LN_ACCEPT_LAZY_EPT_FAULTS (1ULL << 3)
@@ -177,6 +220,11 @@
 #define AX_INSTBITS_CPU_NOT_SUPP         (1UL <<13) /* unsupported CPU */
 #define AX_INSTBITS_32_BIT               (1UL <<14) /* 32 bit windows */
 #define AX_INSTBITS_RUN_INSTALLER        (1UL <<15) /* Pre-install says run installer at shutdown */
+#define AX_INSTBITS_MS_UEFI_CA_MISSING   (1UL <<16) /* Secureboot is missing the Microsoft UEFI CA, you must enable it in setup before installation can proceed */
+#define AX_INSTBITS_FASTBOOT_BUG         (1UL <<17) /* BIOS is not honoring BootNext */
+#define AX_INSTBITS_NO_VMCS_SHADOW       (1UL <<18) /* CPU lacks VMCS shadowing */
+#define AX_INSTBITS_RAN_BCDBOOT          (1UL <<19) /* The machine was booting by luck and we asked windows to fix that, potentially portending doom. */
+#define AX_INSTBITS_BCDBOOT_FAILED       (1UL <<20) /* The machine was booting by luck and we asked windows to fix that, potentially portending doom. */
 
 
 #define AX_INTEGRITY_PCR    9

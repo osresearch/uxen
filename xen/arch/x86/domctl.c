@@ -762,8 +762,11 @@ long arch_do_domctl(
             goto sendtrigger_out;
 
         ret = -ESRCH;
-        if ( domctl->u.sendtrigger.vcpu >= d->max_vcpus ||
-             (v = d->vcpu[domctl->u.sendtrigger.vcpu]) == NULL )
+        if (domctl->u.sendtrigger.vcpu >= d->max_vcpus)
+            goto sendtrigger_out;
+        domctl->u.sendtrigger.vcpu =
+            array_index_nospec(domctl->u.sendtrigger.vcpu, d->max_vcpus);
+        if ((v = d->vcpu[domctl->u.sendtrigger.vcpu]) == NULL)
             goto sendtrigger_out;
 
         switch ( domctl->u.sendtrigger.trigger )
@@ -1036,8 +1039,10 @@ long arch_do_domctl(
             goto ext_vcpucontext_out;
 
         ret = -ESRCH;
-        if ( (evc->vcpu >= d->max_vcpus) ||
-             ((v = d->vcpu[evc->vcpu]) == NULL) )
+        if (evc->vcpu >= d->max_vcpus)
+            goto ext_vcpucontext_out;
+        evc->vcpu = array_index_nospec(evc->vcpu, d->max_vcpus);
+        if ((v = d->vcpu[evc->vcpu]) == NULL)
             goto ext_vcpucontext_out;
 
         if ( domctl->cmd == XEN_DOMCTL_get_ext_vcpucontext )
@@ -1230,8 +1235,11 @@ long arch_do_domctl(
             break;
 
         ret = -EINVAL;
-        if ( (domctl->u.debug_op.vcpu >= d->max_vcpus) ||
-             ((v = d->vcpu[domctl->u.debug_op.vcpu]) == NULL) )
+        if (domctl->u.debug_op.vcpu >= d->max_vcpus)
+            goto debug_op_out;
+        domctl->u.debug_op.vcpu =
+            array_index_nospec(domctl->u.debug_op.vcpu, d->max_vcpus);
+        if ((v = d->vcpu[domctl->u.debug_op.vcpu]) == NULL)
             goto debug_op_out;
 
         ret = -EINVAL;
@@ -1382,8 +1390,10 @@ long arch_do_domctl(
             goto vcpuextstate_out;
 
         ret = -ESRCH;
-        if ( (evc->vcpu >= d->max_vcpus) ||
-             ((v = d->vcpu[evc->vcpu]) == NULL) )
+        if (evc->vcpu >= d->max_vcpus)
+            goto vcpuextstate_out;
+        evc->vcpu = array_index_nospec(evc->vcpu, d->max_vcpus);
+        if ((v = d->vcpu[evc->vcpu]) == NULL)
             goto vcpuextstate_out;
 
         if ( domctl->cmd == XEN_DOMCTL_getvcpuextstate )
@@ -1543,7 +1553,6 @@ long arch_do_domctl(
 #else   /* __UXEN__ */
         gdprintk(XENLOG_ERR, "unknown domctl %d on vm%u\n", domctl->cmd,
                  domctl->domain);
-        DEBUG();
         ret = -ENOSYS;
 #endif  /* __UXEN__ */
         break;

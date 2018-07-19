@@ -16,6 +16,7 @@
 #include "uxdisp_hw.h"
 #include "uxendisp-common.h"
 #include "pv_vblank.h"
+#include "uxenh264-common.h"
 
 #define DEBUG_UXENDISP
 
@@ -41,6 +42,7 @@ struct crtc_state {
     uint32_t yres;
     uint32_t stride;
     uint32_t format;
+    uint32_t buffers;
 
     volatile struct crtc_regs *regs;
     struct display_state *ds;
@@ -64,7 +66,7 @@ struct uxendisp_state {
 
     volatile struct cursor_regs *cursor_regs;
     volatile uint8_t *cursor_data;
-    struct crtc_state crtcs[UXENDISP_NB_CRTCS];
+    struct crtc_state crtcs[UXDISP_NB_CRTCS];
     struct bank_state banks[UXENDISP_NB_BANKS];
 
     uint32_t io_index;
@@ -77,6 +79,10 @@ struct uxendisp_state {
 
     struct vblank_ctx *vblank_ctx;
 };
+
+#define REFRESH_TIMEOUT_MS 200
+static struct Timer *refresh_timer = NULL;
+static int stop_refresh_timer = 1;
 
 #define crtc_to_state(c) (container_of((c), struct uxendisp_state, crtcs[(c)->id]))
 
@@ -220,6 +226,9 @@ crtc_draw(struct uxendisp_state *s, int crtc_id)
         return;
     }
 
+    if (!stop_refresh_timer)
+        memset(dirty, 0xff, (npages + 7) / 8);
+
     if (ds_surface_lock(crtc->ds, &d, &linesize))
         return;
     addr1 = bank_offset;
@@ -360,8 +369,11 @@ cursor_flush(struct uxendisp_state *s)
     w = s->cursor_regs->width;
     h = s->cursor_regs->height;
 
-    if ((w > UXENDISP_CURSOR_MAX_WIDTH) || (h > UXENDISP_CURSOR_MAX_HEIGHT))
+    if ((w > UXDISP_CURSOR_WIDTH_MAX) || (h > UXDISP_CURSOR_HEIGHT_MAX)) {
+        debug_printf("%s: cursor size check failed: (%d > %d) or (%d > %d)\n",
+                     __FUNCTION__, w, UXDISP_CURSOR_WIDTH_MAX, h, UXDISP_CURSOR_HEIGHT_MAX);
         return;
+    }
 
     if (s->cursor_regs->flags & UXDISP_CURSOR_FLAG_1BPP) {
         if (!(s->cursor_regs->flags & UXDISP_CURSOR_FLAG_MASK_PRESENT))
@@ -417,7 +429,7 @@ crtc_flush(struct uxendisp_state *s, int crtc_id, uint32_t offset, int force)
     if (crtc->regs->p.enable) {
         uint32_t bank_offset = offset & (UXENDISP_BANK_SIZE - 1);
         int bank_id = offset >> UXENDISP_BANK_ORDER;
-        unsigned int w, h, stride, fmt;
+        unsigned int w, h, stride, fmt, buffers;
 
         if (!crtc->ds)
             crtc->ds = display_create(&uxendisp_hw_ops, crtc, DCF_START_GUI);
@@ -426,6 +438,7 @@ crtc_flush(struct uxendisp_state *s, int crtc_id, uint32_t offset, int force)
         h = crtc->regs->p.yres;
         stride = crtc->regs->p.stride;
         fmt = crtc->regs->p.format;
+        buffers = crtc->regs->p.buffers;
 
         /* Filter out spurious mode changes */
         if (!force &&
@@ -433,12 +446,18 @@ crtc_flush(struct uxendisp_state *s, int crtc_id, uint32_t offset, int force)
             crtc->yres == h &&
             crtc->stride == stride &&
             crtc->format == fmt &&
+            crtc->buffers == buffers &&
             crtc->offset == offset && !s->resumed)
             return;
 
         if (w > UXENDISP_XRES_MAX || h > UXENDISP_YRES_MAX ||
             stride > UXENDISP_STRIDE_MAX || stride == 0)
             return;
+
+        if (buffers < 1)
+            buffers = 1;
+        if (buffers > UXDISP_NB_BUFFERS)
+            buffers = UXDISP_NB_BUFFERS;
 
         if (!fmt_valid(fmt))
             return;
@@ -447,7 +466,18 @@ crtc_flush(struct uxendisp_state *s, int crtc_id, uint32_t offset, int force)
             return;
 
         bank = &s->banks[bank_id];
-        sz = bank_offset + h * stride;
+
+        /* space to hold all framebuffers */
+        sz  = (h * stride + ALIGN_PAGE_ALIGN-1) & ~(ALIGN_PAGE_ALIGN-1);
+        sz *= buffers;
+        /* possibly enlarge if display offset set past it */
+        if (bank_offset + h * stride > sz)
+            sz = bank_offset + h * stride;
+
+        if (h264_offload) {
+            sz += UXENH264_OUTPUT_WIDTH * UXENH264_OUTPUT_HEIGHT * UXENH264_OUTPUT_BYTES_PER_PIXEL;
+        }
+
         if (sz > UXENDISP_BANK_SIZE)
             return;
 
@@ -515,6 +545,7 @@ crtc_flush(struct uxendisp_state *s, int crtc_id, uint32_t offset, int force)
         crtc->stride = stride;
         crtc->format = fmt;
         crtc->offset = offset;
+        crtc->buffers = buffers;
         s->resumed = 0;
 
     } else {
@@ -537,6 +568,9 @@ crtc_write(struct uxendisp_state *s, int crtc_id, target_phys_addr_t addr,
     switch (addr) {
     case UXDISP_REG_CRTC_OFFSET:
         crtc_flush(s, crtc_id, val, 1);
+        break;
+    case UXDISP_REG_CRTC_BUFFERS:
+        crtc->regs->p.buffers = val;
         break;
     case UXDISP_REG_CRTC_ENABLE:
         crtc->regs->p.enable = val;
@@ -676,7 +710,7 @@ uxendisp_mmio_write(void *opaque, target_phys_addr_t addr, uint64_t val,
         goto invalid;
 
     if (addr >= UXDISP_REG_CRTC(0) &&
-        addr < UXDISP_REG_CRTC(UXENDISP_NB_CRTCS)) {
+        addr < UXDISP_REG_CRTC(UXDISP_NB_CRTCS)) {
         int idx = (addr - UXDISP_REG_CRTC(0)) / UXDISP_REG_CRTC_LEN;
 
         addr &= (UXDISP_REG_CRTC_LEN - 1);
@@ -694,13 +728,14 @@ uxendisp_mmio_write(void *opaque, target_phys_addr_t addr, uint64_t val,
 
     switch (addr) {
     case UXDISP_REG_INTERRUPT:
-        s->isr ^= (uint32_t)val;
+        s->isr &= ~((uint32_t)val);
         if (s->isr == 0)
             qemu_set_irq(s->dev.irq[0], 0);
         return;
     case UXDISP_REG_CURSOR_ENABLE:
         s->cursor_en = val & 0x1;
         cursor_flush(s);
+        stop_refresh_timer = 1;
         return;
     case UXDISP_REG_MODE:
         s->mode = val;
@@ -733,7 +768,7 @@ uxendisp_mmio_read(void *opaque, target_phys_addr_t addr, unsigned size)
         goto invalid;
 
     if (addr >= UXDISP_REG_CRTC(0) &&
-        addr < UXDISP_REG_CRTC(UXENDISP_NB_CRTCS)) {
+        addr < UXDISP_REG_CRTC(UXDISP_NB_CRTCS)) {
         int idx = (addr - UXDISP_REG_CRTC(0)) / UXDISP_REG_CRTC_LEN;
 
         addr &= (UXDISP_REG_CRTC_LEN - 1);
@@ -760,7 +795,7 @@ uxendisp_mmio_read(void *opaque, target_phys_addr_t addr, unsigned size)
     case UXDISP_REG_BANK_ORDER:
         return UXENDISP_BANK_ORDER;
     case UXDISP_REG_CRTC_COUNT:
-        return UXENDISP_NB_CRTCS;
+        return UXDISP_NB_CRTCS;
     case UXDISP_REG_STRIDE_ALIGN:
         return 0;
     case UXDISP_REG_INTERRUPT:
@@ -893,7 +928,7 @@ static void vram_change(struct vram_desc *v, void *opaque)
     struct uxendisp_state *s = opaque;
     int crtc_id;
 
-    for (crtc_id = 0; crtc_id < UXENDISP_NB_CRTCS; crtc_id++) {
+    for (crtc_id = 0; crtc_id < UXDISP_NB_CRTCS; crtc_id++) {
         struct crtc_state *crtc = &s->crtcs[crtc_id];
         int bank_id = crtc->offset >> UXENDISP_BANK_ORDER;
         struct bank_state *bank = &s->banks[bank_id];
@@ -927,7 +962,7 @@ uxendisp_post_load(void *opaque, int version_id)
 
     pci_ram_post_load(&s->dev, version_id);
 
-    for (crtc_id = 0; crtc_id < UXENDISP_NB_CRTCS; crtc_id++)
+    for (crtc_id = 0; crtc_id < UXDISP_NB_CRTCS; crtc_id++)
         s->crtcs[crtc_id].flush_pending = 1;
 
 #ifdef _WIN32
@@ -1019,7 +1054,7 @@ static const VMStateDescription vmstate_uxendisp = {
                              vmstate_uxendisp_bank,
                              struct bank_state),
         VMSTATE_STRUCT_ARRAY(crtcs, struct uxendisp_state,
-                             UXENDISP_NB_CRTCS, 6,
+                             UXDISP_NB_CRTCS, 6,
                              vmstate_uxendisp_crtc,
                              struct crtc_state),
         VMSTATE_UINT32(io_index, struct uxendisp_state),
@@ -1038,6 +1073,17 @@ uxendisp_reset(void *opaque)
     struct uxendisp_state *s = opaque;
 
     (void)s;
+}
+
+static void
+refresh(void *opaque)
+{
+    do_dpy_trigger_refresh(NULL);
+
+    if (!stop_refresh_timer && refresh_timer)
+        mod_timer(refresh_timer, get_clock_ms(vm_clock) + REFRESH_TIMEOUT_MS);
+    else
+        debug_printf("%s: vram refresh timer is off\n", __FUNCTION__);
 }
 
 static int uxendisp_initfn(PCIDevice *dev)
@@ -1059,15 +1105,15 @@ static int uxendisp_initfn(PCIDevice *dev)
                           UXENDISP_MMIO_SIZE);
     memory_region_add_ram_range(&s->mmio, 0x1000, 0x1000,
                                 cursor_regs_ptr_update, s);
-    memory_region_add_ram_range(&s->mmio, 0x8000, 0x8000,
-                                cursor_data_ptr_update, s);
-    for (i = 0; i < UXENDISP_NB_CRTCS; i++) {
+    for (i = 0; i < UXDISP_NB_CRTCS; i++) {
         s->crtcs[i].id = i;
         memory_region_add_ram_range(&s->mmio,
                                     UXDISP_REG_CRTC(i) + 0x1000,
                                     0x1000,
                                     crtc_data_ptr_update, &s->crtcs[i]);
     }
+    memory_region_add_ram_range(&s->mmio, UXDISP_REG_CRTC(UXDISP_NB_CRTCS), UXDISP_REG_CURSOR_DATA,
+                                cursor_data_ptr_update, s);
     memory_region_init(&s->vram, "uxendisp.vram", UXENDISP_VRAM_SIZE);
     s->vram.map_cb = bank_mapping_update;
     s->vram.map_opaque = s;
@@ -1104,6 +1150,13 @@ static int uxendisp_initfn(PCIDevice *dev)
     qemu_register_reset(uxendisp_reset, s);
     uxendisp_reset(s);
 
+    if (!vm_vram_dirty_tracking) {
+        debug_printf("%s: vram refresh timer is on\n", __FUNCTION__);
+        stop_refresh_timer = 0;
+        refresh_timer = new_timer_ms(vm_clock, refresh, NULL);
+        mod_timer(refresh_timer, get_clock_ms(vm_clock) + REFRESH_TIMEOUT_MS);
+    }
+
     return 0;
 }
 
@@ -1111,6 +1164,12 @@ static int uxendisp_exitfn(PCIDevice *dev)
 {
     struct uxendisp_state *s = DO_UPCAST(struct uxendisp_state, dev, dev);
     VGAState *v = &s->vga;
+
+    if (refresh_timer) {
+        del_timer(refresh_timer);
+        free_timer(refresh_timer);
+        refresh_timer = NULL;
+    }
 
 #ifdef _WIN32
     pv_vblank_cleanup(s->vblank_ctx);

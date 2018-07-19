@@ -7,6 +7,7 @@
 #include "smbios.h"
 #include "base64.h"
 #include "urlencode.h"
+#include "wmi.h"
 
 #define _WIN32_DCOM
 #include <windows.h>
@@ -43,14 +44,6 @@ struct acpi_header {
     uint32_t    creator_revision;
 };
 
-struct smbios_header {
-    uint8_t     calling_method;
-    uint8_t     major_version;
-    uint8_t     minor_version;
-    uint8_t     dmi_revision;
-    uint32_t    length;
-};
-
 static struct acpi_header *fadt = NULL;
 static struct smbios_header *smbios_data = NULL;
 
@@ -70,6 +63,20 @@ get_table(uint32_t provider, uint32_t table, size_t *out_len)
         if (!rc) {
             fprintf(stderr, "GetSystemFirmwareTable failed: [0x%x,0x%x]: [0x%x]\n",
                 (int)provider, (int)table, (int)GetLastError());
+            if (provider == RSMB) {
+                fprintf(stderr, "Trying to get RSMB using WMI\n");
+                if (hdr) {
+                    free(hdr);
+                    hdr = NULL;
+                }
+                rc = get_raw_smb_table_using_wmi((struct smbios_header **)&hdr, &len);
+                if (!rc)
+                    fprintf(stderr, "get_raw_smb_table_using_wmi failed\n");
+                else {
+                    fprintf(stderr, "get_raw_smb_table_using_wmi succeeded\n");
+                    break;
+                }
+            }
             return NULL;
         }
     } while (rc != len);
@@ -488,6 +495,7 @@ int smbios_get_version_major(void)
     if (!smbios_data)
         smbios_data = get_table(RSMB, 0, NULL);
 
+    assert(smbios_data);
     return smbios_data->major_version;
 }
 
@@ -496,6 +504,7 @@ int smbios_get_version_minor(void)
     if (!smbios_data)
         smbios_data = get_table(RSMB, 0, NULL);
 
+    assert(smbios_data);
     return smbios_data->minor_version;
 }
 
@@ -507,6 +516,7 @@ smbios_get_struct(int type, size_t *out_len)
     if (!smbios_data)
         smbios_data = get_table(RSMB, 0, NULL);
 
+    assert(smbios_data);
     start = (void *)(smbios_data + 1);
     end = (char *)(smbios_data + 1) + smbios_data->length;
 
@@ -524,6 +534,7 @@ smbios_struct_iterate(int (*callback)(char *, size_t, void *),
     if (!smbios_data)
         smbios_data = get_table(RSMB, 0, NULL);
 
+    assert(smbios_data);
     start = (void *)(smbios_data + 1);
     end = (char *)(smbios_data + 1) + smbios_data->length;
 
@@ -551,6 +562,7 @@ smbios_oem_struct_iterate(int (*callback)(char *, size_t, void *),
     if (!smbios_data)
         smbios_data = get_table(RSMB, 0, NULL);
 
+    assert(smbios_data);
     start = (void *)(smbios_data + 1);
     end = (char *)(smbios_data + 1) + smbios_data->length;
 

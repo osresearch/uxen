@@ -158,11 +158,11 @@ struct vcpu
 
     bool_t           always_access_ok;
 
-    /* Is executing context privileged (aka dom0)? */
-    bool_t           is_privileged;
-
     /* Is executing context privileged within the caller (aka
      * system/kernel) */
+    bool_t           is_privileged;
+
+    /* Is executing context privileged (aka dom0)? */
     bool_t           is_sys_privileged;
 
     bool_t           target_vmis_owner;
@@ -379,6 +379,7 @@ struct domain
     bool_t           is_shutting_down; /* in process of shutting down? */
     bool_t           is_shut_down;     /* fully shut down? */
     int              shutdown_code;
+    bool_t           silent_fake_emulation;
 
     /* If this is not 0, send suspend notification here instead of
      * raising DOM_EXC */

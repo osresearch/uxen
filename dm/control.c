@@ -26,6 +26,10 @@
 #include "guest-agent.h"
 #include "vbox-drivers/shared-clipboard/clipboard-interface.h"
 
+#ifdef CONFIG_VBOXDRV
+#include "vbox-drivers/shared-folders/redir.h"
+#endif
+
 #if defined(CONFIG_NICKEL)
 #include "libnickel.h"
 #endif
@@ -760,19 +764,61 @@ control_command_sf_set_subfolder_scramble_mode(
     const char *subfolder = dict_get_string(d, "subfolder");
     wchar_t *name_w = _utf8_to_wide(name);
     wchar_t *subfolder_w = _utf8_to_wide(subfolder);
+    uint32_t valid_mask = SF_OPT_SCRAMBLE | SF_OPT_NO_REDIRECTED_SCRAMBLE | SF_OPT_SCRAMBLE_FILENAMES;
 
     int mode = dict_get_integer(d, "mode");
     int rc;
 
-    rc =  mode < 0
-        ? sf_restore_opt(name_w, subfolder_w, SF_OPT_SCRAMBLE)
-        : sf_mod_opt_dynamic(name_w, subfolder_w, SF_OPT_SCRAMBLE, mode ? 1:0);
+    if (mode < 0) {
+        /* restore default options for valid_mask */
+        rc = sf_restore_opt(name_w, subfolder_w, valid_mask);
+    } else {
+        rc = sf_mod_opt_dynamic(name_w, subfolder_w, SF_OPT_SCRAMBLE, (mode & SF_OPT_SCRAMBLE) ? 1:0);
+        if (rc) goto out;
+        rc = sf_mod_opt_dynamic(name_w, subfolder_w, SF_OPT_NO_REDIRECTED_SCRAMBLE,
+            (mode & SF_OPT_NO_REDIRECTED_SCRAMBLE) ? 1:0);
+        if (rc) goto out;
+        rc = sf_mod_opt_dynamic(name_w, subfolder_w, SF_OPT_SCRAMBLE_FILENAMES,
+            (mode & SF_OPT_SCRAMBLE_FILENAMES) ? 1:0);
+        if (rc) goto out;
+    }
+out:
     if (rc)
         control_send_error(cd, opt, id, rc, NULL);
     else
         control_send_ok(cd, opt, id, NULL);
     free(name_w);
     free(subfolder_w);
+    return 0;
+}
+
+static int
+control_command_sf_add_redirect(
+    void *opaque,
+    const char *id,
+    const char *opt,
+    dict d,
+    void *command_opaque)
+{
+    struct control_desc *cd = (struct control_desc *)opaque;
+    const char *name = dict_get_string(d, "name");
+    const char *src = dict_get_string(d, "src");
+    const char *dst = dict_get_string(d, "dst");
+    wchar_t *name_w = _utf8_to_wide(name);
+    wchar_t *src_w = _utf8_to_wide(src);
+    wchar_t *dst_w = _utf8_to_wide(dst);
+
+    int rc;
+
+    rc  = sf_redirect_add(name_w, src_w, dst_w);
+    if (rc)
+      control_send_error(cd, opt, id, rc, NULL);
+    else
+      control_send_ok(cd, opt, id, NULL);
+    free(name_w);
+    free(src_w);
+    free(dst_w);
+
     return 0;
 }
 
@@ -801,6 +847,33 @@ control_command_sf_add_subfolder_opt(
         control_send_ok(cd, opt, id, NULL);
     free(name_w);
     free(subfolder_w);
+    return 0;
+}
+
+static int
+control_command_sf_del_redirect(
+    void *opaque,
+    const char *id,
+    const char *opt,
+    dict d,
+    void *command_opaque)
+{
+    struct control_desc *cd = (struct control_desc *)opaque;
+    const char *name = dict_get_string(d, "name");
+    const char *src = dict_get_string(d, "src");
+    wchar_t *name_w = _utf8_to_wide(name);
+    wchar_t *src_w = _utf8_to_wide(src);
+
+    int rc;
+
+    rc  = sf_redirect_del(name_w, src_w);
+    if (rc)
+      control_send_error(cd, opt, id, rc, NULL);
+    else
+      control_send_ok(cd, opt, id, NULL);
+    free(name_w);
+    free(src_w);
+
     return 0;
 }
 
@@ -940,9 +1013,8 @@ remote_execute(void *opaque, const char *id, const char *opt,
 static struct Timer *stats_timer = NULL;
 
 static void
-stats_timer_cb(void *opaque)
+stats_do_collection(void *opaque)
 {
-    uint64_t now = get_clock_ms(rt_clock);
     int ret;
     xc_dominfo_t info;
     int balloon_cur, balloon_min, balloon_max;
@@ -958,7 +1030,7 @@ stats_timer_cb(void *opaque)
     ret = xc_domain_getinfo(xc_handle, vm_id, 1, &info);
     if (ret != 1 || info.domid != vm_id) {
         warn("xc_domain_getinfo failed");
-        goto finish;
+        return;
     }
 
     balloon_cur = balloon_min = balloon_max = 0;
@@ -1008,8 +1080,15 @@ stats_timer_cb(void *opaque)
 
     if (ret)
         warnx("%s: dict_rpc_status", __FUNCTION__);
+}
 
-finish:
+static void
+stats_timer_cb(void *opaque)
+{
+    uint64_t now = get_clock_ms(rt_clock);
+
+    stats_do_collection(opaque);
+
     if (stats_timer)
         mod_timer(stats_timer, now + 1000);
 }
@@ -1037,7 +1116,7 @@ collect_vm_stats_once(void *opaque, const char *id, const char *opt,
 {
     struct control_desc *cd = (struct control_desc *)opaque;
 
-    stats_timer_cb(NULL);
+    stats_do_collection(NULL);
     control_send_ok(cd, opt, id, 0, NULL);
     return 0;
 }
@@ -1181,6 +1260,14 @@ struct dict_rpc_command control_commands[] = {
             { NULL, },
       }, },
 #if defined(CONFIG_VBOXDRV)
+    { "sf-add-redirect", control_command_sf_add_redirect,
+      .args = (struct dict_rpc_arg_desc[]) {
+            { "name", DICT_RPC_ARG_TYPE_STRING, .optional = 0 },
+            { "src", DICT_RPC_ARG_TYPE_STRING, .optional = 0 },
+            { "dst", DICT_RPC_ARG_TYPE_STRING, .optional = 0 },
+            { NULL, },
+      }
+    },
     { "sf-add-subfolder-opt", control_command_sf_add_subfolder_opt,
       .args = (struct dict_rpc_arg_desc[]) {
             { "name", DICT_RPC_ARG_TYPE_STRING, .optional = 0 },
@@ -1189,6 +1276,13 @@ struct dict_rpc_command control_commands[] = {
             { "value", DICT_RPC_ARG_TYPE_INTEGER, .optional = 0 },
             { NULL, },
         }
+    },
+    { "sf-del-redirect", control_command_sf_del_redirect,
+      .args = (struct dict_rpc_arg_desc[]) {
+            { "name", DICT_RPC_ARG_TYPE_STRING, .optional = 0 },
+            { "src", DICT_RPC_ARG_TYPE_STRING, .optional = 0 },
+            { NULL, },
+      }
     },
     { "sf-del-subfolder-opt", control_command_sf_del_subfolder_opt,
       .args = (struct dict_rpc_arg_desc[]) {

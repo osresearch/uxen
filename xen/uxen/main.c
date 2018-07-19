@@ -20,6 +20,7 @@
 #include <asm/current.h>
 #include <asm/guest_access.h>
 #include <asm/hvm/hvm.h>
+#include <asm/hvm/ax.h>
 #include <asm/mm.h>
 #include <asm/p2m.h>
 #include <asm/hap.h>
@@ -46,6 +47,8 @@ static void _cpu_irq_enable(void);
 static int _cpu_irq_is_enabled(void);
 static void _cpu_irq_save(unsigned long *x);
 static void _cpu_irq_restore(unsigned long x);
+
+static cpumask_t cpu_down_map;
 
 struct _uxen_info _uxen_info = {
         .ui_sizeof_struct_page_info = sizeof(struct page_info),
@@ -89,7 +92,7 @@ static void
 _cpu_irq_enable(void)
 {
 
-    if (boot_cpu_data.x86_vendor ==  X86_VENDOR_INTEL)
+    if ((boot_cpu_data.x86_vendor ==  X86_VENDOR_INTEL) || ax_present)
         asm volatile ( "sti" : : : "memory" );
     else
         asm volatile ( "stgi" : : : "memory" );
@@ -297,6 +300,7 @@ do_run_vcpu(uint32_t domid, uint32_t vcpuid)
     if (vcpuid >= d->max_vcpus)
         goto out;
 
+    vcpuid = array_index_nospec(vcpuid, d->max_vcpus);
     v = d->vcpu[vcpuid];
     if (v == NULL)
         goto out;
@@ -553,6 +557,7 @@ do_destroy_vm(xen_domain_handle_t vm_uuid)
     int ret = -ENOENT;
 
     d = rcu_lock_domain_by_uuid(vm_uuid, UUID_HANDLE);
+    printk("%s: dom:%p\n", __FUNCTION__, d);
     if (d == NULL)
         goto out;
 
@@ -606,7 +611,13 @@ __uxen_shutdown_xen(void)
 
     console_start_sync();
 
-    on_selected_cpus(&cpu_online_map, do_hvm_cpu_down, NULL, 1);
+    cpumask_copy(&cpu_down_map,&cpu_online_map);
+
+    on_selected_cpus(&cpu_online_map, do_hvm_cpu_down, NULL, 0);
+
+    printk("waiting to bring all cpus home\n");
+    while (!cpumask_empty(&cpu_down_map))
+        rep_nop();
 
     printk("clearing cpu_online_map\n");
     cpumask_clear(&cpu_online_map);
@@ -624,6 +635,7 @@ do_hvm_cpu_down(void *arg)
 {
 
     hvm_cpu_down();
+    cpumask_test_and_clear_cpu(smp_processor_id(), &cpu_down_map);
 }
 
 void __interface_fn
@@ -659,7 +671,14 @@ __uxen_suspend_xen(void)
     uxen_set_current(dom0->vcpu[smp_processor_id()]);
     current->is_privileged = 1;
 
-    on_selected_cpus(&cpu_online_map, do_hvm_cpu_down, NULL, 1);
+    cpumask_copy(&cpu_down_map,&cpu_online_map);
+
+    on_selected_cpus(&cpu_online_map, do_hvm_cpu_down, NULL, 0);
+
+    printk("waiting to bring all cpus home\n");
+    while (!cpumask_empty(&cpu_down_map))
+        rep_nop();
+
     suspend_platform_time();
 
     current->is_privileged = 0;
@@ -719,33 +738,32 @@ typedef unsigned long uxen_hypercall_t(unsigned long, unsigned long,
 				       unsigned long, unsigned long,
 				       unsigned long, unsigned long);
 
-#define HYPERCALL(x)						\
-    [ __HYPERVISOR_ ## x ] = (uxen_hypercall_t *) do_ ## x
-
-static uxen_hypercall_t *uxen_hypercall_table[NR_hypercalls] = {
-    HYPERCALL(memory_op),
-    HYPERCALL(xen_version),
-    HYPERCALL(hvm_op),
-    HYPERCALL(domctl),
-    HYPERCALL(sched_op),
-    HYPERCALL(event_channel_op),
-    HYPERCALL(v4v_op),
-    HYPERCALL(sysctl),
-};
+#define HYPERCALL(x)                                                   \
+    case __HYPERVISOR_ ## x: {                                         \
+        uxen_hypercall_t *uh = (uxen_hypercall_t *)do_ ## x;           \
+        return uh(                                                     \
+            uhd->uhd_arg[0], uhd->uhd_arg[1], uhd->uhd_arg[2],         \
+            uhd->uhd_arg[3], uhd->uhd_arg[4], uhd->uhd_arg[5]);        \
+    }
 
 intptr_t
 do_hypercall(struct uxen_hypercall_desc *uhd)
 {
 
-    if (uhd->uhd_op >= NR_hypercalls ||
-	uxen_hypercall_table[uhd->uhd_op] == NULL)
-	return -ENOSYS;
-
     this_cpu(hypercall_args) = uhd;
 
-    return uxen_hypercall_table[uhd->uhd_op](uhd->uhd_arg[0], uhd->uhd_arg[1],
-                                             uhd->uhd_arg[2], uhd->uhd_arg[3],
-                                             uhd->uhd_arg[4], uhd->uhd_arg[5]);
+    switch (uhd->uhd_op) {
+        HYPERCALL(memory_op);
+        HYPERCALL(xen_version);
+        HYPERCALL(hvm_op);
+        HYPERCALL(domctl);
+        HYPERCALL(sched_op);
+        HYPERCALL(event_channel_op);
+        HYPERCALL(v4v_op);
+        HYPERCALL(sysctl);
+    }
+
+    return -ENOSYS;
 }
 
 intptr_t __interface_fn

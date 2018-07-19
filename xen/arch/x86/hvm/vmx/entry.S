@@ -89,6 +89,21 @@
 #define EXTRA_stack_space 48
 #endif  /* SAVE_MORE_STATE */
 
+#if defined(__x86_64__)
+#define VMEXIT_CLEAR_RET_DEPTH 0x20
+
+ABI_ENTRY(clear_ret_predictor, 0)
+        mov  %rdi, %rax
+1:      call 3f
+2:      lfence
+        jmp  2b
+3:      dec  %rax
+        jnz  1b
+        lea  (%rsp,%rdi,8),%rsp
+        xor  %rax, %rax
+        ret
+#endif
+
 ABI_ENTRY(vmx_asm_vmexit_handler, 0)
 #define savereg(_x) mov r(_x), UREGS_r(_x)(r(di))
         push r(di)
@@ -113,6 +128,14 @@ ABI_ENTRY(vmx_asm_vmexit_handler, 0)
         savereg(15)
 #endif
 #undef savereg
+
+#if defined(__x86_64__)
+        testb $0xff, ax_present(%rip)
+        jnz   1f
+        mov  $VMEXIT_CLEAR_RET_DEPTH, %rdi
+        call_with_abi(clear_ret_predictor, 1)
+1:
+#endif
 
         call_with_abi(vmx_save_regs, 0)
 
@@ -281,7 +304,6 @@ UNLIKELY_END(realmode)
         mov  CPU_cr8(r(bx)),r(ax)
         mov  r(ax),%cr8
 #endif
-        call_via_uxen_info(sti, r(ax))
         mov $1, r_arg
         call_with_abi(vm_entry_fail, SIZEOF_REG)
         jmp .Lret_from_vmx_asm_do_vmentry
@@ -293,7 +315,6 @@ UNLIKELY_END(realmode)
         mov  CPU_cr8(r(bx)),r(ax)
         mov  r(ax),%cr8
 #endif
-        call_via_uxen_info(sti, r(ax))
         xor r_arg, r_arg
         call_with_abi(vm_entry_fail, SIZEOF_REG)
         jmp .Lret_from_vmx_asm_do_vmentry

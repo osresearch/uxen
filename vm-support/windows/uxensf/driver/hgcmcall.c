@@ -47,6 +47,8 @@
 static char hgcmBuf[RING_SIZE];
 #define BUFFER_OVERHEAD 4096
 
+#include "dbghlp.h"
+
 /* This is the equivalent of the Vbox VbglHGCMCall, that transfers data
 over tcp (well, ChannelSend/Recv), instead of real vbox hgcm.
 */
@@ -56,6 +58,8 @@ uint32_t size)
     int rc, sz;
     TcpMarshallHeader header, *resp_hdr=0;
     char *resp_body=0;
+
+    verify_on_stack(info);
 
     header.magic = HGCMMagicSimple;
     header.u32Function = info->u32Function;
@@ -92,6 +96,8 @@ uint32_t size)
     if (resp_hdr->magic != HGCMMagicSimple)
         return STATUS_INFO_LENGTH_MISMATCH;
 
+    verify_on_stack(info);
+
     rc = VbglHGCMCall_tcp_unmarshall(info, resp_body, info->cParms, true, resp_hdr->size);
     if (!NT_SUCCESS(rc))
         return rc;
@@ -106,12 +112,15 @@ static int init_done;
 int VBOXCALL VbglHGCMCall (VBGLHGCMHANDLE handle, VBoxGuestHGCMCallInfo* info, uint32_t size)
 {
     NTSTATUS status, rc;
+
+    verify_on_stack(info);
+    
     if (!init_done) {
         init_done = 1;
         KeInitializeMutex(&g_Mutex, 0);
     }
     status = KeWaitForMutexObject(&g_Mutex,
-                                  UserRequest,
+                                  Executive,
                                   KernelMode,
                                   FALSE,
                                   NULL);
@@ -119,7 +128,7 @@ int VBOXCALL VbglHGCMCall (VBGLHGCMHANDLE handle, VBoxGuestHGCMCallInfo* info, u
         Log(("BRHVSF: sfdebug: KeWaitForMutexObject error 0x%x\n", status));
         return status;
     }
-
+    verify_on_stack(info);
     rc = VbglHGCMCall_worker(handle, info, size);
     KeReleaseMutex(&g_Mutex, FALSE);
     return rc;

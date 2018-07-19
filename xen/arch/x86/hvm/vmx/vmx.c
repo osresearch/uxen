@@ -61,10 +61,20 @@
 #include <asm/hvm/nestedhvm.h>
 #endif  /* __UXEN_NOT_YET__ */
 #include <asm/xstate.h>
+#include <asm/hvm/xen_pv.h>
+#include <asm/poke.h>
 
 enum handler_return { HNDL_done, HNDL_unhandled, HNDL_exception_raised };
 
+unsigned int __devinitdata opt_spec_ctrl = 0;
+integer_param("spec_ctrl", opt_spec_ctrl);
+
 static DEFINE_PER_CPU(unsigned long, host_msr_tsc_aux);
+static unsigned long __read_mostly host_msr_spec_ctrl;
+static bool_t __read_mostly update_host_vm_ibrs;
+static bool_t __read_mostly enable_host_ibpb;
+static bool_t __read_mostly enable_host_ibpb_noibrs;
+static DEFINE_SPINLOCK(ept_sync_lock);
 
 static void vmx_ctxt_switch_from(struct vcpu *v);
 static void vmx_ctxt_switch_to(struct vcpu *v);
@@ -82,11 +92,13 @@ static void vmx_fpu_dirty_intercept(void);
 static int vmx_msr_read_intercept(unsigned int msr, uint64_t *msr_content);
 static int vmx_msr_write_intercept(unsigned int msr, uint64_t msr_content);
 static void vmx_invlpg_intercept(unsigned long vaddr);
-static void __ept_sync_domain(void *info);
+static inline void ept_maybe_sync_cpu(struct domain *d);
 
 static void setup_pv_vmx(void);
 
 static void vmx_execute(struct vcpu *v);
+
+static void vmx_do_suspend(struct vcpu *v);
 
 static int vmx_domain_initialise(struct domain *d)
 {
@@ -104,8 +116,21 @@ static int vmx_domain_initialise(struct domain *d)
     if ( !zalloc_cpumask_var(&d->arch.hvm_domain.vmx.ept_synced) )
         return -ENOMEM;
 
+    if ( !zalloc_cpumask_var(&d->arch.hvm_domain.vmx.ept_in_use) ) {
+        free_cpumask_var(d->arch.hvm_domain.vmx.ept_synced);
+        return -ENOMEM;
+    }
+
+    if ( !zalloc_cpumask_var(&d->arch.hvm_domain.vmx.ept_dirty) ) {
+        free_cpumask_var(d->arch.hvm_domain.vmx.ept_in_use);
+        free_cpumask_var(d->arch.hvm_domain.vmx.ept_synced);
+        return -ENOMEM;
+    }
+
     if ( (rc = vmx_alloc_vlapic_mapping(d)) != 0 )
     {
+        free_cpumask_var(d->arch.hvm_domain.vmx.ept_dirty);
+        free_cpumask_var(d->arch.hvm_domain.vmx.ept_in_use);
         free_cpumask_var(d->arch.hvm_domain.vmx.ept_synced);
         return rc;
     }
@@ -115,8 +140,17 @@ static int vmx_domain_initialise(struct domain *d)
 
 static void vmx_domain_destroy(struct domain *d)
 {
+#if 0
+    /*
+     * This is unnecessary, as no domain can execute, and any new domain
+     * reusing the VPID/EPT BASE will flish first
+     */
     if ( paging_mode_hap(d) )
         on_each_cpu(__ept_sync_domain, d, 1);
+#endif
+
+    free_cpumask_var(d->arch.hvm_domain.vmx.ept_dirty);
+    free_cpumask_var(d->arch.hvm_domain.vmx.ept_in_use);
     free_cpumask_var(d->arch.hvm_domain.vmx.ept_synced);
     vmx_free_vlapic_mapping(d);
 }
@@ -346,11 +380,15 @@ static void vmx_restore_host_msrs(struct vcpu *v)
               guest_msr_state->msrs[VMX_INDEX_MSR_SHADOW_GS_BASE],
               v);
 
+    if (ax_present)
+        pv_rdmsrl(MSR_IA32_SPEC_CTRL, v->arch.hvm_vcpu.msr_spec_ctrl, v);
+
     while ( host_msr_state->flags )
     {
         i = find_first_set_bit(host_msr_state->flags);
         if (host_msr_state->msrs[i] != guest_msr_state->msrs[i])
-            wrmsrl(msr_index[i], host_msr_state->msrs[i]);
+            if (wrmsr_safe(msr_index[i], host_msr_state->msrs[i]))
+                wrmsrl(msr_index[i],0);
         clear_bit(i, &host_msr_state->flags);
     }
 }
@@ -377,12 +415,16 @@ static void vmx_restore_guest_msrs(struct vcpu *v)
                 HVM_DBG_LOG(DBG_LEVEL_2,
                             "restore guest's index %d msr %x with value %lx",
                             i, msr_index[i], guest_msr_state->msrs[i]);
-                wrmsrl(msr_index[i], guest_msr_state->msrs[i]);
+                if (wrmsr_safe(msr_index[i], guest_msr_state->msrs[i]))
+                    wrmsrl(msr_index[i], 0);
             }
         } else
             ax_vmcs_x_wrmsrl(v, msr_index[i], guest_msr_state->msrs[i]);
         clear_bit(i, &guest_flags);
     }
+
+    if (ax_present)
+        ax_vmcs_x_wrmsrl(v, MSR_IA32_SPEC_CTRL, v->arch.hvm_vcpu.msr_spec_ctrl);
 
 #ifndef __UXEN__
     if ( (v->arch.hvm_vcpu.guest_efer ^ read_efer()) & EFER_SCE )
@@ -1011,19 +1053,7 @@ static void vmx_ctxt_switch_to(struct vcpu *v)
     cpumask_set_cpu(cpu, v->domain->domain_dirty_cpumask);
     cpumask_set_cpu(cpu, v->vcpu_dirty_cpumask);
 
-    if ( paging_mode_hap(d) )
-    {
-        unsigned int cpu = smp_processor_id();
-        /* Test-and-test-and-set this CPU in the EPT-is-synced mask. */
-        if ( !cpumask_test_cpu(cpu, d->arch.hvm_domain.vmx.ept_synced) &&
-             !cpumask_test_and_set_cpu(cpu,
-                                       d->arch.hvm_domain.vmx.ept_synced) ) {
-            struct p2m_domain *p2m = p2m_get_hostp2m(d);
-
-            __invept(INVEPT_SINGLE_CONTEXT, ept_get_eptp(d), 0);
-            p2m->virgin = 1;
-        }
-    }
+    ept_maybe_sync_cpu(d);
 
     vmx_restore_guest_msrs(v);
 #ifndef __UXEN_NOT_YET__
@@ -1615,39 +1645,152 @@ static void vmx_update_guest_efer(struct vcpu *v)
 #endif  /* __UXEN__ */
 }
 
-static void __ept_sync_domain(void *info)
+/* Caller must hold ept_sync_lock */
+static void
+ept_maybe_sync_cpu_no_lock(struct domain *d, unsigned int cpu)
 {
-    struct domain *d = info;
+    if (!cpumask_test_cpu(cpu, d->arch.hvm_domain.vmx.ept_synced)) {
+        struct p2m_domain *p2m = p2m_get_hostp2m(d);
 
-    if (this_cpu(hvmon))
+        cpumask_set_cpu(cpu, d->arch.hvm_domain.vmx.ept_synced);
+
         __invept(INVEPT_SINGLE_CONTEXT, ept_get_eptp(d), 0);
+        p2m->virgin = 1;
+    }
 }
 
-static void ept_sync_domain(struct domain *d)
+static inline void
+ept_maybe_sync_cpu(struct domain *d)
 {
+    unsigned long flags, flags2;
+
+    if (!paging_mode_hap(d))
+        return;
+
+    cpu_irq_save(flags); 
+    spin_lock_irqsave(&ept_sync_lock, flags2);
+
+    ept_maybe_sync_cpu_no_lock(d, smp_processor_id());
+
+    spin_unlock_irqrestore(&ept_sync_lock, flags2);
+    cpu_irq_restore(flags); 
+}
+
+static void
+ept_maybe_sync_cpu_enter(struct domain *d)
+{
+    unsigned int cpu = smp_processor_id();
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    unsigned long flags, flags2;
+
+    if (!paging_mode_hap(d))
+        return;
+
+    poke_setup_cpu();
+
+    /* We're about to do a vmenter, which should clear this */
+
+    cpu_irq_save(flags); 
+    spin_lock_irqsave(&ept_sync_lock, flags2);
+
+    cpumask_set_cpu(cpu, d->arch.hvm_domain.vmx.ept_in_use);
+
+    ept_maybe_sync_cpu_no_lock(d, cpu);
+
+    p2m->virgin = 0;
+    spin_unlock_irqrestore(&ept_sync_lock, flags2);
+    cpu_irq_restore(flags); 
+}
+
+static void
+ept_maybe_sync_cpu_leave(struct domain *d)
+{
+    unsigned int cpu = smp_processor_id();
+    unsigned long flags, flags2;
+
+    if (!paging_mode_hap(d))
+        return;
+
+    cpu_irq_save(flags);
+    spin_lock_irqsave(&ept_sync_lock, flags2);
+
+    ept_maybe_sync_cpu_no_lock(d, cpu);
+
+    cpumask_clear_cpu(cpu, d->arch.hvm_domain.vmx.ept_in_use);
+
+    spin_unlock_irqrestore(&ept_sync_lock, flags2);
+    cpu_irq_restore(flags);
+}
+
+static void
+ept_sync_domain(struct domain *d)
+{
+    int misery = 0;
+    unsigned long flags, flags2;
+
     /* Only if using EPT and this domain has some VCPUs to dirty. */
     if ( !paging_mode_hap(d) || !d->vcpu || !d->vcpu[0] )
         return;
 
     ASSERT(local_irq_is_enabled());
 
-
-    if (ax_present)  {
+    if (ax_present)
         ax_invept_all_cpus();
-    } else {
-    /*
-     * Flush active cpus synchronously. Flush others the next time this domain
-     * is scheduled onto them. We accept the race of other CPUs adding to
-     * the ept_synced mask before on_selected_cpus() reads it, resulting in
-     * unnecessary extra flushes, to avoid allocating a cpumask_t on the stack.
-     */
-        cpumask_and(d->arch.hvm_domain.vmx.ept_synced,
-                d->domain_dirty_cpumask, &cpu_online_map);
+    else {
+        /* Misery: only the test_and_set_bit operations are properly atomic */
 
-        on_selected_cpus(d->arch.hvm_domain.vmx.ept_synced,
-                     __ept_sync_domain, d, 1);
-        p2m->virgin = 1;
+        cpu_irq_save(flags); 
+        spin_lock_irqsave(&ept_sync_lock, flags2);
+
+        cpumask_clear(d->arch.hvm_domain.vmx.ept_synced);
+
+        ept_maybe_sync_cpu_no_lock(d, smp_processor_id());
+
+        cpumask_andnot(d->arch.hvm_domain.vmx.ept_dirty,
+                       d->arch.hvm_domain.vmx.ept_in_use,
+                       d->arch.hvm_domain.vmx.ept_synced);
+
+        while (!cpumask_empty(d->arch.hvm_domain.vmx.ept_dirty)) {
+            unsigned int cpu;
+
+            spin_unlock_irqrestore(&ept_sync_lock, flags2);
+            cpu_irq_restore(flags); 
+
+#ifdef __x86_64__
+            for_each_cpu(cpu, d->arch.hvm_domain.vmx.ept_dirty) {
+                if (cpu == smp_processor_id())
+                    continue;
+                poke_cpu(cpu);
+            }
+#else
+	    cpu = ~0;
+            poke_cpu(cpu);
+#endif /* __x86_64__ */
+
+            rep_nop();
+            rep_nop();
+            rep_nop();
+            rep_nop();
+            rep_nop();
+            rep_nop();
+
+            cpu_irq_save(flags); 
+            spin_lock_irqsave(&ept_sync_lock, flags2);
+
+            if ((misery++) > 1000000) {
+                WARNISH();
+                break;
+            }
+
+            ept_maybe_sync_cpu_no_lock(d, smp_processor_id());
+
+            cpumask_andnot(d->arch.hvm_domain.vmx.ept_dirty,
+                           d->arch.hvm_domain.vmx.ept_in_use,
+                           d->arch.hvm_domain.vmx.ept_synced);
+        }
+
+        spin_unlock_irqrestore(&ept_sync_lock, flags2);
+        cpu_irq_restore(flags); 
     }
 }
 
@@ -1942,6 +2085,7 @@ static struct hvm_function_table __read_mostly vmx_function_table = {
     .event_pending        = vmx_event_pending,
     .do_pmu_interrupt     = vmx_do_pmu_interrupt,
     .do_execute           = vmx_execute,
+    .do_suspend           = vmx_do_suspend,
     .pt_sync_domain       = ept_sync_domain,
     .cpu_on               = vmx_cpu_on,
     .cpu_off              = vmx_cpu_off,
@@ -2005,6 +2149,48 @@ struct hvm_function_table * __init start_vmx(void)
     setup_vmcs_dump();
 
     setup_pv_vmx();
+
+    if (cpu_has_spec_ctrl) {
+        rdmsrl(MSR_IA32_SPEC_CTRL, host_msr_spec_ctrl);
+        printk(XENLOG_INFO "SPEC CTRL: host (%lx) IBRS %sabled\n",
+               host_msr_spec_ctrl,
+               (host_msr_spec_ctrl & SPEC_CTRL_FEATURE_IBRS_mask) ?
+               "en" : "dis");
+        update_host_vm_ibrs = !ax_present;
+        /*
+         * opt_spec_ctrl == 0: don't use ibpb
+         *                  1: use ibpb on return from vcpu run thread
+         *                  2: if host is not using ibrs, use ibpb on
+         *                     return from non-root mode, and skip
+         *                     ibpb on return from vcpu run thread,
+         *                     if host is using ibrs, same as 1
+         *                  3: use ibpb on return from vcpu run thread,
+         *                     only if host is using ibrs
+         */
+        if (opt_spec_ctrl & ~3u)
+            printk(XENLOG_ERR
+                   "SPEC CTRL: opt_spec_ctrl unexpected value %x, using %x\n",
+                   opt_spec_ctrl, opt_spec_ctrl & 3);
+        switch (opt_spec_ctrl & 3) {
+        case 1:
+            enable_host_ibpb = 1;
+            break;
+        case 2:
+            if (!(host_msr_spec_ctrl & SPEC_CTRL_FEATURE_IBRS_mask))
+                enable_host_ibpb_noibrs = 1;
+            else
+                enable_host_ibpb = 1;
+            break;
+        case 3:
+            if (host_msr_spec_ctrl & SPEC_CTRL_FEATURE_IBRS_mask)
+                enable_host_ibpb = 1;
+            break;
+        }
+        printk(XENLOG_INFO
+               "SPEC CTRL: host_ibpb %sabled, host_ibpb_noibrs %sable\n",
+               enable_host_ibpb ? "en" : "dis",
+               enable_host_ibpb_noibrs ? "en" : "dis");
+    }
 
     return &vmx_function_table;
 }
@@ -2411,6 +2597,14 @@ static int vmx_msr_read_intercept(unsigned int msr, uint64_t *msr_content)
     case MSR_IA32_DS_AREA:
         *msr_content = 0;       /* no vPMU */
         break;
+    case MSR_IA32_SPEC_CTRL:
+        *msr_content = current->arch.hvm_vcpu.msr_spec_ctrl;
+        if (cpu_has_spec_ctrl && !current->arch.hvm_vcpu.use_spec_ctrl) {
+            current->arch.hvm_vcpu.use_spec_ctrl = 1;
+            vmx_disable_intercept_for_msr(current, MSR_IA32_SPEC_CTRL);
+        } else
+            goto gp_fault;
+        break;
     default:
 #ifndef __UXEN_NOT_YET__
         if ( vpmu_do_rdmsr(msr, msr_content) )
@@ -2598,6 +2792,14 @@ static int vmx_msr_write_intercept(unsigned int msr, uint64_t msr_content)
      case MSR_IA32_DS_AREA:
          /* no vPMU */
          break;
+    case MSR_IA32_SPEC_CTRL:
+        current->arch.hvm_vcpu.msr_spec_ctrl = msr_content;
+        if (cpu_has_spec_ctrl && !current->arch.hvm_vcpu.use_spec_ctrl) {
+            current->arch.hvm_vcpu.use_spec_ctrl = 1;
+            vmx_disable_intercept_for_msr(current, MSR_IA32_SPEC_CTRL);
+        } else
+            goto gp_fault;
+        break;
     default:
 #ifndef __UXEN_NOT_YET__
         if ( vpmu_do_wrmsr(msr, msr_content) )
@@ -2961,13 +3163,15 @@ vmx_execute(struct vcpu *v)
 
     ASSERT(v);
 
-    if ( paging_mode_hap(v->domain) ) {
-        struct p2m_domain *p2m = p2m_get_hostp2m(v->domain);
-        p2m->virgin = 0;
-    }
+    cpu_irq_disable();
 
-    if (vmx_asm_do_vmentry(v))
+    ept_maybe_sync_cpu_enter(v->domain);
+
+    if (vmx_asm_do_vmentry(v)) {
+        ept_maybe_sync_cpu_leave(v->domain);
+        cpu_irq_enable();
         return;
+    }
 
     if ( paging_mode_hap(v->domain) && hvm_paging_enabled(v) )
         v->arch.hvm_vcpu.guest_cr[3] = v->arch.hvm_vcpu.hw_cr[3] =
@@ -2975,6 +3179,8 @@ vmx_execute(struct vcpu *v)
 
     exit_reason = !vmx_vmcs_late_load ? __vmread(VM_EXIT_REASON) :
         v->arch.hvm_vmx.exit_reason;
+
+    ept_maybe_sync_cpu_leave(v->domain);
 
     if ( hvm_long_mode_enabled(v) )
         HVMTRACE_ND(VMEXIT64, 0, 1/*cycles*/, 3, exit_reason,
@@ -3572,11 +3778,30 @@ asmlinkage_abi void vmx_restore_regs(uintptr_t host_rsp)
 
     if (vmx_vmcs_late_load)
         pv_vmcs_flush_dirty(this_cpu(current_vmcs_vmx), 0);
+
+    if (update_host_vm_ibrs &&
+        current->arch.hvm_vcpu.msr_spec_ctrl != host_msr_spec_ctrl)
+        wrmsrl(MSR_IA32_SPEC_CTRL, current->arch.hvm_vcpu.msr_spec_ctrl);
 }
 
 asmlinkage_abi void vmx_save_regs(void)
 {
     struct cpu_user_regs *regs = &current->arch.user_regs;
+
+    if (update_host_vm_ibrs) {
+        if (current->arch.hvm_vcpu.use_spec_ctrl)
+            rdmsrl(MSR_IA32_SPEC_CTRL, current->arch.hvm_vcpu.msr_spec_ctrl);
+        if (host_msr_spec_ctrl)
+            wrmsrl(MSR_IA32_SPEC_CTRL, host_msr_spec_ctrl);
+        else {
+            lfence();
+            if (current->arch.hvm_vcpu.msr_spec_ctrl)
+                wrmsrl(MSR_IA32_SPEC_CTRL, SPEC_CTRL_FEATURE_DISABLE_IBRS);
+            if (enable_host_ibpb_noibrs)
+                wrmsrl(MSR_IA32_PRED_CMD, PRED_CMD_IBPB);
+        }
+    } else
+        lfence();
 
     if (!vmx_vmcs_late_load)
         current->arch.hvm_vmx.launched = 1;
@@ -3603,6 +3828,41 @@ asmlinkage_abi void vmx_save_regs(void)
     regs->eflags = __vmread(GUEST_RFLAGS);
 }
 
+asmlinkage_abi void vm_entry_fail(uintptr_t resume)
+{
+    unsigned long error = __vmread(VM_INSTRUCTION_ERROR);
+
+    if (update_host_vm_ibrs) {
+        if (current->arch.hvm_vcpu.use_spec_ctrl)
+            rdmsrl(MSR_IA32_SPEC_CTRL, current->arch.hvm_vcpu.msr_spec_ctrl);
+        if (host_msr_spec_ctrl)
+            wrmsrl(MSR_IA32_SPEC_CTRL, host_msr_spec_ctrl);
+        else {
+            lfence();
+            if (current->arch.hvm_vcpu.msr_spec_ctrl)
+                wrmsrl(MSR_IA32_SPEC_CTRL, SPEC_CTRL_FEATURE_DISABLE_IBRS);
+            if (enable_host_ibpb_noibrs)
+                wrmsrl(MSR_IA32_PRED_CMD, PRED_CMD_IBPB);
+        }
+    } else
+        lfence();
+
+    cpu_irq_enable();
+
+    printk("<vm_%s_fail> error code %lx\n",
+           resume ? "resume" : "launch", error);
+    vmcs_dump_vcpu(current);
+    __domain_crash(current->domain);
+}
+
+void
+vmx_do_suspend(struct vcpu *v)
+{
+
+    if (enable_host_ibpb)
+        wrmsrl(MSR_IA32_PRED_CMD, PRED_CMD_IBPB);
+}
+
 static bool_t __initdata disable_pv_vmx;
 invbool_param("pv_vmx", disable_pv_vmx);
 
@@ -3614,6 +3874,8 @@ setup_pv_vmx(void)
         return;
 
     setup_pv_vmcs_access();
+
+    xen_pv_ept_probe();
 }
 
 /*

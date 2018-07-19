@@ -164,7 +164,8 @@ quota_start_op(struct quota_op *op,
                SHFLCLIENTDATA *client,
                SHFLROOT root,
                SHFLHANDLE shflhandle,
-               const wchar_t *path)
+               const wchar_t *path,
+               const wchar_t *guest_path)
 {
     uint64_t qmax, qcur;
     SHFLFILEHANDLE *filehandle = NULL;
@@ -176,7 +177,7 @@ quota_start_op(struct quota_op *op,
     vbsfMappingsQueryQuota(client, root, &qmax, &qcur);
     if (!qmax)
         return VINF_SUCCESS;
-    if (quota_disabled(client, root, shflhandle, path))
+    if (quota_disabled(client, root, shflhandle, guest_path))
         return VINF_SUCCESS;
     if (qcur == QUOTA_INVALID) {
 #ifdef SCAN_DIR_SIZE
