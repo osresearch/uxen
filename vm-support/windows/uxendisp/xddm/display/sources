@@ -1,0 +1,25 @@
+TARGETNAME=uxendispdd
+TARGETPATH=obj
+TARGETTYPE=GDI_DRIVER
+
+!include ../../../common/sources.inc
+
+MSC_WARNING_LEVEL=/W3
+
+MSC_WARNING_LEVEL=$(MSC_WARNING_LEVEL) /WX
+
+INCLUDES=$(DDK_INC_PATH); ..\include; ..\..\..\..\..\common\include
+
+NTTARGETFILE2 = POST
+
+TARGETLIBS=$(DDK_LIB_PATH)\ntoskrnl.lib \
+           $(DDK_LIB_PATH)\Hal.lib
+
+SOURCES=debug.c     \
+        enable.c    \
+        palette.c   \
+        pointer.c   \
+        screen.c    \
+        perfcnt.c   \
+        uxendisp.rc
+

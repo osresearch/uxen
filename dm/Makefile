@@ -1,0 +1,14 @@
+
+TOPDIR = $(abspath ..)
+include $(TOPDIR)/Config.mk
+
+all:
+%::
+	@$(MAKE) --no-print-directory -C $(TOPDIR)/$(TARGET_HOST)/uxendm $@
+
+.PHONY: TAGS
+TAGS:
+	@($(MAKE) --no-print-directory -f Makefile.dm \
+	  SRCROOT=$(abspath $(TOPDIR)/dm) \
+	  src-files src-files-qemu; \
+	  find . -name \*.h | grep -v ./qemu ) | xargs etags -

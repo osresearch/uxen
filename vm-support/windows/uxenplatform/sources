@@ -1,0 +1,37 @@
+TARGETNAME = uxenplatform
+TARGETTYPE = DRIVER
+
+!include ../common/sources.inc
+
+!if defined(UXEN_BUILD_INFO)
+RCOPTIONS=$(RCOPTIONS) /DBUILD_INFO=$(UXEN_BUILD_INFO)
+USER_C_FLAGS=$(USER_C_FLAGS) /DBUILD_INFO=$(UXEN_BUILD_INFO)
+!endif
+
+KMDF_VERSION_MAJOR = 1
+
+NTTARGETFILE0 = $(OBJ_PATH)\$(O)\$(INF_NAME).inf
+PASS0_BINPLACE = $(NTTARGETFILE0)
+
+NTTARGETFILE1 = COPY
+
+NTTARGETFILE2 = POST
+
+INCLUDES = ..\..\..\common\include\xen-public;..\common
+
+LINKER_FLAGS = $(LINKER_FLAGS) /LTCG:NOSTATUS /SECTION:.rsrc,!d
+
+TARGETLIBS = $(UXENVMLIB_LIB) \
+             $(DDK_LIB_PATH)\aux_klib.lib
+
+SOURCES = balloon.c \
+	  platform.c \
+          bus.c \
+          zp.c \
+	  uxenplatform.rc
+
+AMD64_SOURCES = bus_config.asm
+I386_SOURCES = bus_config.asm
+
+TARGET_DESTINATION = wdf
+

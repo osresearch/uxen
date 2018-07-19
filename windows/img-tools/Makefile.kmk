@@ -1,0 +1,131 @@
+# $Id: $
+## @file
+# Sub-Makefile for the offline filesystem modification utilities
+#
+
+#
+# Copyright (C) 2011 Bromium Inc.
+# Author: Gianni Tedesco
+# All rights reserved
+
+SUB_DEPTH = ../../..
+include $(KBUILD_PATH)/subheader.kmk
+
+VBOX_PATH_DISK_TOOLS_SRC := $(PATH_SUB_CURRENT)
+
+NTFS_3G_HEADERS := $(PATH_ROOT)/../builddeps/ntfs-3g/include
+NTFS_3G_LIB := $(PATH_ROOT)/../builddeps/ntfs-3g/lib
+
+TEMPLATE_DiskLib                     += VBox ring-3, with libntfs
+ifeq ($(KBUILD_HOST),win)
+ ifeq ($(KBUILD_TARGET_ARCH),amd64)
+  TEMPLATE_DiskLib_TOOL                = MINGW64
+ else
+  TEMPLATE_DiskLib_TOOL                = MINGW32
+ endif
+else
+endif
+
+TEMPLATE_DiskLib_DEFS                = IN_RING3 _FILE_OFFSET_BITS=64
+TEMPLATE_DiskLib_DEFS.win            = HAVE_CONFIG_H=1
+TEMPLATE_DiskLib_CFLAGS              = -g -pipe -nodefaultlibs -nostdlib -Wall
+TEMPLATE_DiskLib_LDFLAGS.x86         = -m32
+TEMPLATE_DiskLib_LDFLAGS.amd64       = -m64
+TEMPLATE_DiskLib_LDFLAGS.linux       = -Wl,-z,noexecstack $(VBOX_LD_as_needed)
+TEMPLATE_DiskLib_INCS                = $(NTFS_3G_HEADERS)
+#TEMPLATE_DiskLib_INCS                = $(NTFS_3G_HEADERS) $(PATH_ROOT)/src/VBox/disklib $(PATH_ROOT)/src/VBox/Storage
+TEMPLATE_DiskLib_LIBPATH.win         = $(NTFS_3G_LIB)
+TEMPLATE_DiskLib_LIBS.win            = $(LIB_DDU) \
+                                       $(LIB_RUNTIME) \
+                                       VssApi.lib \
+                                       ntfs-3g-81.lib
+TEMPLATE_DiskLib_LIBS.linux          = $(LIB_DDU) $(LIB_RUNTIME) ntfs-3g
+
+
+LIBRARIES += disklib
+
+disklib_TEMPLATE = DiskLib
+disklib_SOURCES = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/util.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/ntreg.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bcd.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/machimg.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/hexdump.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/ntfsfix.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/fs-ntfs.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/ntfs-extras.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/disklib.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/ntdev.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/part.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/cache.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/glob.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/fnmatch.c
+
+
+LIBS_FOR_DISKTOOLS                     = $(LIB_DDU) $(LIB_RUNTIME) $(PATH_LIB)/disklib.a
+
+TEMPLATE_DiskTools                     = VBox Ring-3 with disklib
+TEMPLATE_DiskTools_EXTENDS             = VBOXR3EXE
+TEMPLATE_DiskTools_EXTENDS_BY          = appending
+TEMPLATE_DiskTools_LIBPATH             = $(NTFS_3G_LIB)
+TEMPLATE_DiskTools_LIBS.linux          = $(LIBS_FOR_DISKTOOLS) ntfs-3g 
+TEMPLATE_DiskTools_LIBS.win            = $(LIBS_FOR_DISKTOOLS) libntfs-3g-81.lib VssApi.lib
+
+PROGRAMS += bro-ntfsls bro-ntfsfix bro-ntfsplant bro-ntfsrm \
+            bro-vmdkcompact bro-bcdedit bro-ntfscp bro-ntfscat \
+            bro-seal
+
+bro-ntfsls_TEMPLATE = DiskTools
+bro-ntfsls_SOURCES  = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/fileset.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-ntfsls.cpp \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/vss.cpp
+
+bro-ntfscat_TEMPLATE = DiskTools
+bro-ntfscat_SOURCES  = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-ntfscat.cpp \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/vss.cpp
+
+bro-ntfsfix_TEMPLATE = DiskTools
+bro-ntfsfix_SOURCES  = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-ntfsfix.cpp \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/vss.cpp
+
+bro-ntfsplant_TEMPLATE = DiskTools
+bro-ntfsplant_SOURCES  = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-ntfsplant.cpp \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/vss.cpp
+
+bro-ntfsrm_TEMPLATE = DiskTools
+bro-ntfsrm_SOURCES  = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-ntfsrm.cpp \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/vss.cpp
+
+bro-vmdkcompact_TEMPLATE = DiskTools
+bro-vmdkcompact_SOURCES = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-vmdkcompact.cpp \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/vss.cpp
+
+bro-ntfscp_TEMPLATE = DiskTools
+bro-ntfscp_SOURCES = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/fileset.c \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-ntfscp.cpp \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/vss.cpp
+
+bro-bcdedit_TEMPLATE = DiskTools
+bro-bcdedit_SOURCES = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-bcdedit.cpp \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/vss.cpp
+
+bro-seal_TEMPLATE = DiskTools
+bro-seal_SOURCES = \
+	$(VBOX_PATH_DISK_TOOLS_SRC)/bro-seal.cpp \
+    $(PATH_ROOT)/src/VBox/Storage/dubtree.c \
+    $(PATH_ROOT)/src/VBox/Storage/simpletree.c \
+    $(PATH_ROOT)/src/VBox/Storage/copybuffer.c
+
+bro-seal_INCS = $(PATH_ROOT)/src/VBox/disklib $(PATH_ROOT)/src/VBox/Storage
+
+# generate rules
+include $(KBUILD_PATH)/subfooter.kmk
+

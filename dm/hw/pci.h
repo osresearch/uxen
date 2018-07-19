@@ -1,0 +1,9 @@
+#ifndef _DM_PCI_H_
+#define _DM_PCI_H_
+
+#include <dm/qemu/hw/pci.h>
+
+#define PCI_DEVICE_ID_UXEN_PLATFORM     0x5173
+#define PCI_DEVICE_ID_UXEN_VGA          0x5102
+
+#endif  /* _DM_PCI_H_ */

@@ -1,0 +1,40 @@
+TARGETNAME = uxendisp
+TARGETTYPE = MINIPORT
+
+!include ../../../common/sources.inc
+
+!if defined(UXEN_BUILD_INFO)
+RCOPTIONS=$(RCOPTIONS) /DBUILD_INFO=$(UXEN_BUILD_INFO)
+USER_C_FLAGS=$(USER_C_FLAGS) /DBUILD_INFO=$(UXEN_BUILD_INFO)
+!endif
+
+TARGETLIBS=$(DDK_LIB_PATH)\videoprt.lib \
+           $(DDK_LIB_PATH)\ntoskrnl.lib \
+           $(DDK_LIB_PATH)\Hal.lib \
+           $(UXENVMLIB_LIB) \
+           $(UXENV4VLIB_LIB)
+
+MSC_WARNING_LEVEL = /W3 /WX
+
+NTTARGETFILE0 = $(OBJ_PATH)\$(O)\$(INF_NAME).inf
+PASS0_BINPLACE = $(NTTARGETFILE0)
+
+NTTARGETFILE1 = COPY
+
+NTTARGETFILE2 = POST
+
+LINKER_FLAGS = $(LINKER_FLAGS) /LTCG:NOSTATUS /SECTION:.rsrc,!d
+
+SOURCES = hw.c uxendisp.c dirty_rect.c uxendisp.rc
+
+INCLUDES=..\include; \
+         ..\..\..\common; \
+         ..\..\..\..\..\common\include; \
+         ..\..\..\..\..\common\include\xen-public; \
+         $(UXENV4VLIB_INC);
+
+UXENVMLIB_BUILD_DIR   = \
+  $(OBJECT_ROOT)\..\..\uxenvmlib\$(WDK_ALTERNATE_MAKEDIR)\..\..\..\uxenvmlib\$(O)
+
+UXENVMLIB_LIB         = \
+  $(UXENVMLIB_BUILD_DIR)\uxenvmlib.lib

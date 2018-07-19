@@ -1,0 +1,10 @@
+#include "../common/uxencommon.rc"
+
+#define VER_FILETYPE                VFT_DRV
+#define VER_FILESUBTYPE             VFT2_DRV_DISPLAY
+#define VER_FILEDESCRIPTION_STR     "uXen Display Driver"
+#define VER_INTERNALNAME_STR        "uxendisp.sys"
+#define VER_ORIGINALFILENAME_STR    VER_INTERNALNAME_STR
+#define VER_PRODUCTNAME_STR         "uXen Display"
+
+#include "common.ver"

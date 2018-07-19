@@ -1,0 +1,76 @@
+; uxendisp.inf
+
+[Version]
+Signature = "$Windows NT$"
+DriverVer = 09/09/2015, 1.0.0.0
+Provider = %COMPANY%
+Class = Display
+ClassGUID = {4d36e968-e325-11ce-bfc1-08002be10318}
+CatalogFile = uxendisp.cat
+
+[DestinationDirs]
+DefaultDestDir    = 11    ; system32
+uxendisp.Miniport = 12    ; drivers
+uxendisp.Display  = 11    ; system32
+uxendisp.DispWow  = 10, SysWow64
+
+[SourceDisksNames]
+1 = %DiskId%
+
+[SourceDisksFiles]
+uxendisp.sys  = 1
+uxend3d.dll   = 1
+uxend3d32.dll = 1
+
+[Manufacturer]
+%COMPANY% = q, NTx86.6.0, NTamd64.6.0
+
+; Vista x86 and up
+[q.NTx86.6.0]
+%uxendisp.DeviceDesc% = uxendisp, PCI\VEN_5853&DEV_5102
+
+; Vista x64 and up
+[q.NTamd64.6.0]
+%uxendisp.DeviceDesc% = uxendisp, PCI\VEN_5853&DEV_5102
+
+[uxendisp]
+FeatureScore = F9
+CopyFiles    = uxendisp.Miniport, uxendisp.Display, uxendisp.DispWow
+AddReg       = uxendisp_SoftwareDeviceSettings
+
+[uxendisp.Miniport]
+uxendisp.sys
+
+[uxendisp.Display]
+uxend3d.dll,,,%COPYFLG_IN_USE_TRY_RENAME% | %DELFLG_IN_USE%
+
+[uxendisp.DispWow]
+uxend3d32.dll,,,%COPYFLG_IN_USE_TRY_RENAME% | %DELFLG_IN_USE%
+
+[uxendisp.Services]
+AddService = uxendisp, 0x00000002, uxendisp_Service ; Assign the named service as the PnP function driver
+
+[uxendisp_Service]
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 0                  ; SERVICE_ERROR_IGNORE
+LoadOrderGroup = Video
+ServiceBinary  = %12%\uxendisp.sys
+
+[uxendisp_SoftwareDeviceSettings]
+HKR,, InstalledDisplayDrivers,        %REG_MULTI_SZ%, uxend3d, uxend3d32
+HKR,, UserModeDriverName,             %REG_MULTI_SZ%, uxend3d.dll
+HKR,, UserModeDriverNameWow,          %REG_MULTI_SZ%, uxend3d32.dll
+HKR,, VgaCompatible,                  %REG_DWORD%,    0
+HKR,, Acceleration.Level,             %REG_DWORD%,    5
+HKR,, VideoDebugLevel,                %REG_DWORD%,    3
+
+[Strings]
+COMPANY = "uXen"
+uxendisp.DeviceDesc = "uXen Display"
+DiskId = "uXen Display Driver Installation Media"
+
+REG_MULTI_SZ              = 0x00010000
+REG_DWORD                 = 0x00010001
+COPYFLG_IN_USE_TRY_RENAME = 0x00004000
+DELFLG_IN_USE             = 0x00010000
